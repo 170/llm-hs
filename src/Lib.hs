@@ -40,7 +40,7 @@ runPipe opts = do
         , model = modelName opts
         , apiKey = apiKeyValue
         , baseUrl = baseUrlOpt opts
-        , streaming = streamOpt opts
+        , streaming = maybe False id (streamOpt opts)
         , history = []  -- No history in pipe mode
         }
 
@@ -52,9 +52,12 @@ runPipe opts = do
 
 runInteractive :: Options -> IO ()
 runInteractive opts = do
+  let prov = case provider opts of
+        Just p -> p
+        Nothing -> error "Provider must be set"  -- Should never happen after merge
   TIO.putStrLn "=== Interactive Mode ==="
-  TIO.putStrLn $ "Provider: " <> T.pack (show (provider opts))
-  let defaultModel = case provider opts of
+  TIO.putStrLn $ "Provider: " <> T.pack (show prov)
+  let defaultModel = case prov of
         OpenAI -> "gpt-4o-mini"
         Claude -> "claude-3-5-sonnet-20241022"
         Ollama -> "llama3.2"
@@ -90,7 +93,7 @@ conversationLoop opts apiKey history = do
                 , model = modelName opts
                 , apiKey = apiKey
                 , baseUrl = baseUrlOpt opts
-                , streaming = streamOpt opts
+                , streaming = maybe False id (streamOpt opts)
                 , history = history  -- Pass conversation history to API
                 }
 
@@ -107,7 +110,7 @@ conversationLoop opts apiKey history = do
             Right response -> do
               let assistantMsg = content response
 
-              if streamOpt opts
+              if maybe False id (streamOpt opts)
                 then liftIO $ TIO.putStrLn ""  -- Add newline after streaming
                 else liftIO $ TIO.putStrLn assistantMsg
 
@@ -125,7 +128,10 @@ getApiKey :: Options -> IO (Maybe T.Text)
 getApiKey opts = case apiKeyOpt opts of
   Just key -> return $ Just key
   Nothing -> do
-    envKey <- case provider opts of
+    let prov = case provider opts of
+          Just p -> p
+          Nothing -> error "Provider must be set"
+    envKey <- case prov of
       OpenAI -> lookupEnv "OPENAI_API_KEY"
       Claude -> lookupEnv "ANTHROPIC_API_KEY"
       Ollama -> return Nothing  -- Ollama doesn't need API key
@@ -133,17 +139,21 @@ getApiKey opts = case apiKeyOpt opts of
     return $ T.pack <$> envKey
 
 callProvider :: Options -> LLMRequest -> IO (Either LLMError LLMResponse)
-callProvider opts request = case provider opts of
-  OpenAI -> callOpenAI request
-  Claude -> callClaude request
-  Ollama -> callOllama request
-  Gemini -> callGemini request
+callProvider opts request =
+  let prov = case provider opts of
+        Just p -> p
+        Nothing -> error "Provider must be set"
+  in case prov of
+    OpenAI -> callOpenAI request
+    Claude -> callClaude request
+    Ollama -> callOllama request
+    Gemini -> callGemini request
 
 handleResult :: Options -> Either LLMError LLMResponse -> IO ()
 handleResult opts result = case result of
   Left err -> TIO.hPutStrLn stderr $ "Error: " <> T.pack (show err)
   Right response -> do
-    if streamOpt opts
+    if maybe False id (streamOpt opts)
       then TIO.putStrLn ""  -- Add newline after streaming
       else TIO.putStrLn $ content response
     hFlush stdout

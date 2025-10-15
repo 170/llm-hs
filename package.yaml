@@ -33,6 +33,8 @@ dependencies:
 - http-conduit
 - haskeline
 - async
+- directory
+- filepath
 
 ghc-options:
 - -Wall

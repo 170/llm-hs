@@ -13,7 +13,8 @@ A CLI tool for calling various LLM APIs (OpenAI, Claude, Ollama, Gemini) from th
 - **Interactive mode** for multi-turn conversations (REPL)
 - Pipe mode for single-shot queries
 - Automatic conversation history management in interactive mode
-- Configurable via command-line arguments or environment variables
+- Configurable via command-line arguments, environment variables, or configuration file
+- Configuration file support for default settings (`~/.llm-hs.json`)
 
 ## Installation
 
@@ -160,6 +161,55 @@ echo "Tell me a joke" | llm-hs-exe -p gemini -s
 - Claude: `claude-3-5-sonnet-20241022`
 - Ollama: `llama3.2`
 - Gemini: `gemini-1.5-flash`
+
+## Configuration File
+
+You can create a configuration file at `~/.llm-hs.json` to set default values for your LLM provider, model, and other options. Command-line arguments will override these defaults.
+
+### Example Configuration
+
+```json
+{
+  "provider": "claude",
+  "model": "claude-3-5-sonnet-20241022",
+  "stream": true,
+  "apiKey": "your-api-key-here",
+  "baseUrl": "http://localhost:11434"
+}
+```
+
+### Configuration Options
+
+- `provider` (string): Default LLM provider (`"openai"`, `"claude"`, `"ollama"`, `"gemini"`)
+- `model` (string): Default model name for the provider
+- `stream` (boolean): Enable streaming output by default
+- `apiKey` (string): API key for the provider (optional, can use environment variables instead)
+- `baseUrl` (string): Base URL for the provider (mainly for Ollama)
+- `mcpServers` (array): MCP server configurations (future feature)
+
+### Priority Order
+
+Settings are applied in the following order (later takes precedence):
+
+1. Default values (hardcoded in the application)
+2. Configuration file (`~/.llm-hs.json`)
+3. Environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.)
+4. Command-line arguments
+
+### Example Usage with Config File
+
+If you have `~/.llm-hs.json` with default provider and model:
+
+```bash
+# Uses config file defaults
+llm-hs-exe
+
+# Override provider from config
+llm-hs-exe --provider openai
+
+# Override model from config
+llm-hs-exe --model gpt-4o
+```
 
 ## Development
 

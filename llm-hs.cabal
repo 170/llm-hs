@@ -28,6 +28,7 @@ library
       Lib
       LLM.Claude
       LLM.CLI
+      LLM.Config
       LLM.Gemini
       LLM.Ollama
       LLM.OpenAI
@@ -46,6 +47,8 @@ library
     , base >=4.7 && <5
     , bytestring
     , conduit
+    , directory
+    , filepath
     , haskeline
     , http-client
     , http-client-tls
@@ -71,6 +74,8 @@ executable llm-hs-exe
     , base >=4.7 && <5
     , bytestring
     , conduit
+    , directory
+    , filepath
     , haskeline
     , http-client
     , http-client-tls
@@ -98,6 +103,8 @@ test-suite llm-hs-test
     , base >=4.7 && <5
     , bytestring
     , conduit
+    , directory
+    , filepath
     , haskeline
     , http-client
     , http-client-tls

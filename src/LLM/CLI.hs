@@ -3,23 +3,25 @@
 module LLM.CLI
   ( Options(..)
   , parseOptions
+  , mergeConfigWithOptions
   ) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
 import Options.Applicative
 import LLM.Types (Provider(..))
+import LLM.Config (Config(..))
 
 data Options = Options
-  { provider :: Provider
+  { provider :: Maybe Provider
   , modelName :: Maybe Text
   , apiKeyOpt :: Maybe Text
   , baseUrlOpt :: Maybe Text
-  , streamOpt :: Bool
+  , streamOpt :: Maybe Bool
   } deriving (Show)
 
-providerParser :: Parser Provider
-providerParser = option (maybeReader parseProvider)
+providerParser :: Parser (Maybe Provider)
+providerParser = optional $ option (maybeReader parseProvider)
   (  long "provider"
   <> short 'p'
   <> metavar "PROVIDER"
@@ -54,11 +56,11 @@ optionsParser = Options
       <> metavar "BASE_URL"
       <> help "Base URL for the provider (mainly for Ollama, default: localhost)"
       ))
-  <*> switch
+  <*> optional (switch
       (  long "stream"
       <> short 's'
       <> help "Enable streaming output (real-time)"
-      )
+      ))
 
 parseOptions :: IO Options
 parseOptions = execParser opts
@@ -68,3 +70,36 @@ parseOptions = execParser opts
       <> progDesc "Call LLM APIs with input from stdin"
       <> header "llm-hs - A CLI tool for calling various LLM APIs"
       )
+
+-- Merge configuration file settings with command-line options
+-- Command-line options take precedence over config file
+mergeConfigWithOptions :: Maybe Config -> Options -> Either String Options
+mergeConfigWithOptions Nothing opts =
+  case provider opts of
+    Nothing -> Left "No provider specified. Please specify via --provider or in ~/.llm-hs.json"
+    Just _ -> Right $ opts { streamOpt = Just (maybe False id (streamOpt opts)) }
+mergeConfigWithOptions (Just config) opts =
+  let mergedProvider = case provider opts of
+        Just p -> Just p
+        Nothing -> defaultProvider config
+      mergedModel = case modelName opts of
+        Just m -> Just m
+        Nothing -> defaultModel config
+      mergedApiKey = case apiKeyOpt opts of
+        Just k -> Just k
+        Nothing -> defaultApiKey config
+      mergedBaseUrl = case baseUrlOpt opts of
+        Just u -> Just u
+        Nothing -> defaultBaseUrl config
+      mergedStream = case streamOpt opts of
+        Just s -> Just s
+        Nothing -> defaultStream config
+  in case mergedProvider of
+       Nothing -> Left "No provider specified. Please specify via --provider or in ~/.llm-hs.json"
+       Just p -> Right $ Options
+         { provider = Just p
+         , modelName = mergedModel
+         , apiKeyOpt = mergedApiKey
+         , baseUrlOpt = mergedBaseUrl
+         , streamOpt = Just (maybe False id mergedStream)
+         }
