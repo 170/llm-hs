@@ -54,6 +54,14 @@ runInteractive :: Options -> IO ()
 runInteractive opts = do
   TIO.putStrLn "=== Interactive Mode ==="
   TIO.putStrLn $ "Provider: " <> T.pack (show (provider opts))
+  let defaultModel = case provider opts of
+        OpenAI -> "gpt-4o-mini"
+        Claude -> "claude-3-5-sonnet-20241022"
+        Ollama -> "llama3.2"
+        Gemini -> "gemini-1.5-flash"
+  case modelName opts of
+    Just model -> TIO.putStrLn $ "Model: " <> model
+    Nothing -> TIO.putStrLn $ "Model: " <> defaultModel <> " (default)"
   TIO.putStrLn "Type your message and press Enter. Type 'exit' or 'quit' to end."
   TIO.putStrLn "Emacs keybindings supported (C-a, C-e, C-k, etc.)\n"
 
