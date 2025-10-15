@@ -123,7 +123,7 @@ startMCPServer server = do
   result <- try $ createProcess (proc cmd args)
     { std_in = CreatePipe
     , std_out = CreatePipe
-    , std_err = Inherit
+    , std_err = NoStream  -- Suppress stderr output from MCP servers
     , env = Just mergedEnv
     }
 

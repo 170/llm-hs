@@ -33,27 +33,25 @@ import qualified LLM.Color as Color
 
 runLLM :: Options -> IO ()
 runLLM opts = do
-  -- Load config to get MCP servers
-  config <- loadConfig
+  -- Check if stdin is a terminal (interactive mode)
+  isTerminal <- hIsTerminalDevice stdin
 
-  -- Start MCP servers if configured
-  let servers = maybe [] mcpServers config
+  if isTerminal
+    then do
+      -- Load config to get MCP servers (only for interactive mode)
+      config <- loadConfig
+      let servers = maybe [] mcpServers config
 
-  -- Use bracket to ensure proper cleanup
-  bracket
-    (startMCPServers servers)
-    (\clients -> mapM_ stopMCPServer clients)
-    (\clients -> do
-      -- Build MCP context
-      mcpCtx <- buildMCPContext clients
-
-      -- Check if stdin is a terminal (interactive mode)
-      isTerminal <- hIsTerminalDevice stdin
-
-      if isTerminal
-        then runInteractive opts clients mcpCtx
-        else runPipe opts mcpCtx
-    )
+      -- Use bracket to ensure proper cleanup
+      bracket
+        (startMCPServers servers)
+        (\clients -> mapM_ stopMCPServer clients)
+        (\clients -> do
+          -- Build MCP context
+          mcpCtx <- buildMCPContext clients
+          runInteractive opts clients mcpCtx
+        )
+    else runPipe opts Nothing
 
 -- | Start all MCP servers
 startMCPServers :: [MCPServer] -> IO [MCPClient]
