@@ -6,7 +6,7 @@ module LLM.Claude (callClaude) where
 import Control.Exception (try, SomeException)
 import Control.Monad (when)
 import Data.IORef (newIORef, readIORef, writeIORef, IORef)
-import Data.Aeson (FromJSON(..), ToJSON(..), object, (.=), (.:), (.:?), withObject, decode)
+import Data.Aeson (FromJSON(..), ToJSON(..), object, (.=), (.:), (.:?), withObject, decode, eitherDecode)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Conduit ((.|), runConduit, ConduitT)
@@ -18,7 +18,8 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import System.IO (hFlush, stdout)
 import Network.HTTP.Simple
-import Network.HTTP.Conduit (responseBody)
+import Network.HTTP.Conduit (responseBody, Response)
+import Network.HTTP.Types.Status (statusCode)
 import qualified LLM.Types as Types
 import LLM.Types (LLMRequest, LLMResponse(..), LLMError(..))
 import LLM.Spinner (stopSpinner)
@@ -77,6 +78,24 @@ instance FromJSON ClaudeStreamEvent where
   parseJSON = withObject "ClaudeStreamEvent" $ \v ->
     ClaudeStreamEvent <$> v .: "type" <*> v .:? "delta"
 
+-- Error response types
+data ClaudeErrorDetail = ClaudeErrorDetail
+  { errorType :: Text
+  , errorMessage :: Text
+  } deriving (Show)
+
+instance FromJSON ClaudeErrorDetail where
+  parseJSON = withObject "ClaudeErrorDetail" $ \v ->
+    ClaudeErrorDetail <$> v .: "type" <*> v .: "message"
+
+data ClaudeErrorResponse = ClaudeErrorResponse
+  { errorDetail :: ClaudeErrorDetail
+  } deriving (Show)
+
+instance FromJSON ClaudeErrorResponse where
+  parseJSON = withObject "ClaudeErrorResponse" $ \v ->
+    ClaudeErrorResponse <$> v .: "error"
+
 callClaude :: LLMRequest -> IO (Either LLMError LLMResponse)
 callClaude llmReq = do
   let apiKey' = case Types.apiKey llmReq of
@@ -110,15 +129,24 @@ callClaudeNonStream apiKey' model' messages' = do
                 $ setRequestHeader "content-type" ["application/json"]
                 $ request'
 
-    response <- httpJSON request
-    return $ getResponseBody response :: IO ClaudeResponse
+    response <- httpLBS request
+    let status = statusCode $ getResponseStatus response
+        body = getResponseBody response
+
+    if status >= 400
+      then case eitherDecode body :: Either String ClaudeErrorResponse of
+        Right errResp -> return $ Left $ APIError $ T.unpack (errorMessage (errorDetail errResp))
+        Left _ -> return $ Left $ APIError $ "HTTP " ++ show status ++ ": " ++ show body
+      else case eitherDecode body :: Either String ClaudeResponse of
+        Right claudeResp ->
+          case responseContent claudeResp of
+            [] -> return $ Left $ APIError "No response from Claude"
+            (c:_) -> return $ Right $ LLMResponse (contentText c)
+        Left err -> return $ Left $ APIError $ "Parse error: " ++ err
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
-    Right claudeResp ->
-      case responseContent claudeResp of
-        [] -> return $ Left $ APIError "No response from Claude"
-        (c:_) -> return $ Right $ LLMResponse (contentText c)
+    Right res -> return res
 
 callClaudeStream :: Text -> Text -> [ClaudeMessage] -> IO (Either LLMError LLMResponse)
 callClaudeStream apiKey' model' messages' = do
