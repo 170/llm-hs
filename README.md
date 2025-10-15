@@ -185,7 +185,7 @@ You can create a configuration file at `~/.llm-hs.json` to set default values fo
 - `stream` (boolean): Enable streaming output by default
 - `apiKey` (string): API key for the provider (optional, can use environment variables instead)
 - `baseUrl` (string): Base URL for the provider (mainly for Ollama)
-- `mcpServers` (array): MCP server configurations (future feature)
+- `mcpServers` (array): MCP server configurations (see MCP Support section below)
 
 ### Priority Order
 
@@ -210,6 +210,113 @@ llm-hs-exe --provider openai
 # Override model from config
 llm-hs-exe --model gpt-4o
 ```
+
+## MCP (Model Context Protocol) Support
+
+llm-hs now supports MCP servers, which allow LLMs to access external tools and resources. MCP servers are configured in the `~/.llm-hs.json` configuration file.
+
+### What is MCP?
+
+MCP (Model Context Protocol) is a standardized protocol for connecting AI assistants to external data sources and tools. MCP servers can provide:
+- **Tools**: Functions that the LLM can describe in its responses
+- **Resources**: Access to files, databases, APIs, and other data sources
+
+### Configuring MCP Servers
+
+Add MCP servers to your configuration file:
+
+```json
+{
+  "provider": "claude",
+  "model": "claude-3-5-sonnet-20241022",
+  "stream": true,
+  "mcpServers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/directory"]
+    },
+    {
+      "name": "github",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"]
+    }
+  ]
+}
+```
+
+### MCP Server Configuration Format
+
+Each MCP server entry has the following fields:
+
+- `name` (string): A friendly name for the server
+- `command` (string): The command to execute (e.g., `"npx"`, `"python"`, `"node"`)
+- `args` (array of strings): Arguments to pass to the command
+
+### How MCP Works with llm-hs
+
+When you start llm-hs with MCP servers configured:
+
+1. **Startup**: llm-hs automatically starts all configured MCP servers
+2. **Discovery**: The tool queries each server for available tools and resources
+3. **Context**: Available tools are added to the LLM's system prompt
+4. **Interaction**: The LLM can describe tools in its responses based on your queries
+5. **Cleanup**: MCP servers are automatically stopped when the session ends
+
+### Example MCP Servers
+
+Here are some popular MCP servers you can use:
+
+#### Filesystem Server
+Access local files and directories:
+```json
+{
+  "name": "filesystem",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/username/Documents"]
+}
+```
+
+#### GitHub Server
+Query GitHub repositories:
+```json
+{
+  "name": "github",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-github"]
+}
+```
+
+#### Custom MCP Server
+You can also create your own MCP server in any language:
+```json
+{
+  "name": "my-tool",
+  "command": "python",
+  "args": ["my_mcp_server.py"]
+}
+```
+
+### MCP in Interactive Mode
+
+When using interactive mode with MCP servers, you'll see a message indicating how many tools are available:
+
+```
+=== Interactive Mode ===
+Provider: Claude
+Model: claude-3-5-sonnet-20241022 (default)
+MCP Tools: 5 tools available
+Type your message and press Enter. Type 'exit' or 'quit' to end.
+```
+
+The LLM can then reference and describe these tools when responding to your queries.
+
+### Notes
+
+- MCP servers run as child processes and communicate via stdio (JSON-RPC)
+- All MCP servers are automatically stopped when llm-hs exits
+- If an MCP server fails to start, llm-hs will display an error but continue running
+- Currently, the LLM can see and describe tools but cannot directly execute them (this is a safety feature)
 
 ## Development
 

@@ -8,8 +8,11 @@ module LLM.Types
   , LLMError(..)
   , Message(..)
   , ConversationHistory
+  , MCPContext(..)
+  , ToolCall(..)
   ) where
 
+import Data.Aeson (Value)
 import Data.Text (Text)
 import GHC.Generics (Generic)
 
@@ -29,11 +32,20 @@ data LLMRequest = LLMRequest
   , baseUrl :: Maybe Text
   , streaming :: Bool
   , history :: ConversationHistory
+  , mcpContext :: Maybe MCPContext
+  } deriving (Show, Eq, Generic)
+
+-- | Tool call information
+data ToolCall = ToolCall
+  { toolCallId :: Text
+  , toolName :: Text
+  , toolArguments :: Text  -- JSON string
   } deriving (Show, Eq, Generic)
 
 -- | Response from LLM
 data LLMResponse = LLMResponse
   { content :: Text
+  , toolCalls :: Maybe [ToolCall]
   } deriving (Show, Eq, Generic)
 
 -- | Error types
@@ -52,3 +64,9 @@ data Message = Message
 
 -- | Conversation history
 type ConversationHistory = [Message]
+
+-- | MCP Context (tools and resources available)
+data MCPContext = MCPContext
+  { mcpTools :: [(Text, Text, Value)]  -- (name, description, schema)
+  , mcpResources :: [(Text, Text)]     -- (uri, description)
+  } deriving (Show, Eq, Generic)

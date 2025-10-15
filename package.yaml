@@ -35,6 +35,10 @@ dependencies:
 - async
 - directory
 - filepath
+- process
+- stm
+- containers
+- time
 
 ghc-options:
 - -Wall

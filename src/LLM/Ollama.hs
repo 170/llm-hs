@@ -76,7 +76,7 @@ callOllamaNonStream baseUrl' model' prompt' = do
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
-    Right ollamaResp -> return $ Right $ LLMResponse (response ollamaResp)
+    Right ollamaResp -> return $ Right $ LLMResponse (response ollamaResp) Nothing
 
 callOllamaStream :: Text -> Text -> Text -> IO (Either LLMError LLMResponse)
 callOllamaStream baseUrl' model' prompt' = do
@@ -97,7 +97,7 @@ callOllamaStream baseUrl' model' prompt' = do
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
-    Right () -> return $ Right $ LLMResponse ""
+    Right () -> return $ Right $ LLMResponse "" Nothing
 
 processOllamaChunk :: IORef Bool -> BS.ByteString -> IO ()
 processOllamaChunk firstChunkRef chunk

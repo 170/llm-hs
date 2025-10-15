@@ -37,11 +37,14 @@ data ClaudeRequest = ClaudeRequest
   , messages :: [ClaudeMessage]
   , maxTokens :: Int
   , requestStream :: Bool
+  , systemPrompt :: Maybe Text
   } deriving (Show)
 
 instance ToJSON ClaudeRequest where
-  toJSON (ClaudeRequest m msgs mt s) =
-    object ["model" .= m, "messages" .= msgs, "max_tokens" .= mt, "stream" .= s]
+  toJSON (ClaudeRequest m msgs mt s sys) =
+    case sys of
+      Nothing -> object ["model" .= m, "messages" .= msgs, "max_tokens" .= mt, "stream" .= s]
+      Just sysText -> object ["model" .= m, "messages" .= msgs, "max_tokens" .= mt, "stream" .= s, "system" .= sysText]
 
 data ClaudeContent = ClaudeContent
   { contentText :: Text
@@ -107,19 +110,38 @@ callClaude llmReq = do
       -- Build messages from history + current prompt
       historyMessages = map (\msg -> ClaudeMessage (Types.role msg) (Types.messageContent msg)) (Types.history llmReq)
       allMessages = historyMessages ++ [ClaudeMessage "user" (Types.prompt llmReq)]
+      -- Build system prompt with MCP context
+      sysPrompt = buildSystemPrompt (Types.mcpContext llmReq)
 
   if Types.streaming llmReq
-    then callClaudeStream apiKey' model' allMessages
-    else callClaudeNonStream apiKey' model' allMessages
+    then callClaudeStream apiKey' model' allMessages sysPrompt
+    else callClaudeNonStream apiKey' model' allMessages sysPrompt
 
-callClaudeNonStream :: Text -> Text -> [ClaudeMessage] -> IO (Either LLMError LLMResponse)
-callClaudeNonStream apiKey' model' messages' = do
+buildSystemPrompt :: Maybe Types.MCPContext -> Maybe Text
+buildSystemPrompt Nothing = Nothing
+buildSystemPrompt (Just ctx) =
+  if null (Types.mcpTools ctx)
+    then Nothing
+    else Just $ T.unlines
+      [ "You have access to the following tools via MCP (Model Context Protocol):"
+      , ""
+      , T.unlines $ map formatTool (Types.mcpTools ctx)
+      , ""
+      , "To use a tool, mention it in your response and describe what you want to do."
+      ]
+  where
+    formatTool (name, desc, _schema) =
+      "- " <> name <> ": " <> desc
+
+callClaudeNonStream :: Text -> Text -> [ClaudeMessage] -> Maybe Text -> IO (Either LLMError LLMResponse)
+callClaudeNonStream apiKey' model' messages' sysPrompt = do
   result <- try $ do
     let requestBody = ClaudeRequest
           { requestModel = model'
           , messages = messages'
           , maxTokens = 4096
           , requestStream = False
+          , systemPrompt = sysPrompt
           }
 
     request' <- parseRequest "POST https://api.anthropic.com/v1/messages"
@@ -141,21 +163,22 @@ callClaudeNonStream apiKey' model' messages' = do
         Right claudeResp ->
           case responseContent claudeResp of
             [] -> return $ Left $ APIError "No response from Claude"
-            (c:_) -> return $ Right $ LLMResponse (contentText c)
+            (c:_) -> return $ Right $ LLMResponse (contentText c) Nothing
         Left err -> return $ Left $ APIError $ "Parse error: " ++ err
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
     Right res -> return res
 
-callClaudeStream :: Text -> Text -> [ClaudeMessage] -> IO (Either LLMError LLMResponse)
-callClaudeStream apiKey' model' messages' = do
+callClaudeStream :: Text -> Text -> [ClaudeMessage] -> Maybe Text -> IO (Either LLMError LLMResponse)
+callClaudeStream apiKey' model' messages' sysPrompt = do
   result <- try $ do
     let requestBody = ClaudeRequest
           { requestModel = model'
           , messages = messages'
           , maxTokens = 4096
           , requestStream = True
+          , systemPrompt = sysPrompt
           }
 
     request' <- parseRequest "POST https://api.anthropic.com/v1/messages"
@@ -172,7 +195,7 @@ callClaudeStream apiKey' model' messages' = do
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
-    Right () -> return $ Right $ LLMResponse ""
+    Right () -> return $ Right $ LLMResponse "" Nothing
 
 parseClaudeSSE :: Monad m => ConduitT BS.ByteString BS.ByteString m ()
 parseClaudeSSE = CL.mapMaybe extractData

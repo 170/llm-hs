@@ -6,34 +6,96 @@ module Lib
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import qualified Data.Text.Encoding as TE
+import qualified Data.ByteString.Lazy as LBS
+import qualified Data.Aeson
+import qualified Data.Aeson.KeyMap
+import qualified Data.Aeson.Key as Key
+import Data.Foldable (toList)
+import Data.Time (getCurrentTime, formatTime, defaultTimeLocale)
+import Data.Time.LocalTime (getCurrentTimeZone, utcToLocalTime)
 import System.Environment (lookupEnv)
 import System.IO (stderr, hFlush, stdout, stdin, hIsTerminalDevice)
 import System.Console.Haskeline
 import Control.Monad.IO.Class (liftIO)
-import LLM.Types
+import Control.Exception (bracket)
+import qualified LLM.Types as Types
+import LLM.Types (LLMRequest(..), LLMResponse(..), LLMError(..), Message(..), ConversationHistory, MCPContext(..), Provider(..))
 import LLM.OpenAI (callOpenAI)
 import LLM.Claude (callClaude)
 import LLM.Ollama (callOllama)
 import LLM.Gemini (callGemini)
 import LLM.CLI (Options(..))
 import LLM.Spinner (startSpinner, stopSpinner)
+import LLM.Config (loadConfig, MCPServer, Config(..))
+import LLM.MCP (MCPClient, startMCPServer, stopMCPServer, listTools, callTool, MCPTool(..))
 
 runLLM :: Options -> IO ()
 runLLM opts = do
-  -- Check if stdin is a terminal (interactive mode)
-  isTerminal <- hIsTerminalDevice stdin
+  -- Load config to get MCP servers
+  config <- loadConfig
 
-  if isTerminal
-    then runInteractive opts
-    else runPipe opts
+  -- Start MCP servers if configured
+  let servers = maybe [] mcpServers config
 
-runPipe :: Options -> IO ()
-runPipe opts = do
+  -- Use bracket to ensure proper cleanup
+  bracket
+    (startMCPServers servers)
+    (\clients -> mapM_ stopMCPServer clients)
+    (\clients -> do
+      -- Build MCP context
+      mcpCtx <- buildMCPContext clients
+
+      -- Check if stdin is a terminal (interactive mode)
+      isTerminal <- hIsTerminalDevice stdin
+
+      if isTerminal
+        then runInteractive opts clients mcpCtx
+        else runPipe opts mcpCtx
+    )
+
+-- | Start all MCP servers
+startMCPServers :: [MCPServer] -> IO [MCPClient]
+startMCPServers servers = do
+  results <- mapM startMCPServer servers
+  let clients = [client | Right client <- results]
+  let errors = [err | Left err <- results]
+
+  -- Print errors if any
+  mapM_ (\err -> TIO.hPutStrLn stderr $ "MCP Error: " <> T.pack err) errors
+
+  return clients
+
+-- | Build MCP context from clients
+buildMCPContext :: [MCPClient] -> IO (Maybe MCPContext)
+buildMCPContext [] = return Nothing
+buildMCPContext clients = do
+  -- Collect tools from all clients
+  allTools <- concat <$> mapM getClientTools clients
+  return $ Just $ MCPContext
+    { mcpTools = allTools
+    , mcpResources = []  -- Resources not implemented yet
+    }
+  where
+    getClientTools client = do
+      result <- listTools client
+      case result of
+        Left err -> return []
+        Right tools -> return
+          [ (LLM.MCP.toolName tool, maybe "" id (LLM.MCP.toolDescription tool), LLM.MCP.toolInputSchema tool)
+          | tool <- tools
+          ]
+
+runPipe :: Options -> Maybe MCPContext -> IO ()
+runPipe opts mcpCtx = do
   -- Read input from stdin
   input <- TIO.getContents
 
   -- Get API key
   apiKeyValue <- getApiKey opts
+
+  -- Create system message with current time
+  systemMsg <- createSystemMessage
 
   let request = LLMRequest
         { prompt = input
@@ -41,7 +103,8 @@ runPipe opts = do
         , apiKey = apiKeyValue
         , baseUrl = baseUrlOpt opts
         , streaming = maybe False id (streamOpt opts)
-        , history = []  -- No history in pipe mode
+        , history = [systemMsg]  -- Include system message with current time
+        , mcpContext = mcpCtx
         }
 
   -- Call the appropriate provider
@@ -50,8 +113,28 @@ runPipe opts = do
   -- Output the result
   handleResult opts result
 
-runInteractive :: Options -> IO ()
-runInteractive opts = do
+-- | Create system message with current date and time
+createSystemMessage :: IO Message
+createSystemMessage = do
+  now <- getCurrentTime
+  tz <- getCurrentTimeZone
+  let localTime = utcToLocalTime tz now
+      dateTimeStr = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S %Z" localTime
+      dateStr = formatTime defaultTimeLocale "%Y-%m-%d" localTime
+      dayOfWeek = formatTime defaultTimeLocale "%A" localTime
+      systemContent = T.unlines
+        [ "Current date and time: " <> T.pack dateTimeStr
+        , "Today's date: " <> T.pack dateStr <> " (" <> T.pack dayOfWeek <> ")"
+        , ""
+        , "IMPORTANT: When the user mentions relative dates like 'today', 'tomorrow', 'yesterday', etc., interpret them as specific dates:"
+        , "- 'today' means " <> T.pack dateStr
+        , "- Use this current date to calculate other relative dates"
+        , "- When searching for news or events, use the specific date in your queries"
+        ]
+  return $ Message "system" systemContent
+
+runInteractive :: Options -> [MCPClient] -> Maybe MCPContext -> IO ()
+runInteractive opts mcpClients mcpCtx = do
   let prov = case provider opts of
         Just p -> p
         Nothing -> error "Provider must be set"  -- Should never happen after merge
@@ -65,17 +148,28 @@ runInteractive opts = do
   case modelName opts of
     Just model -> TIO.putStrLn $ "Model: " <> model
     Nothing -> TIO.putStrLn $ "Model: " <> defaultModel <> " (default)"
+
+  -- Show MCP status
+  case mcpCtx of
+    Nothing -> return ()
+    Just ctx -> do
+      let toolCount = length (mcpTools ctx)
+      TIO.putStrLn $ "MCP Tools: " <> T.pack (show toolCount) <> " tools available"
+
   TIO.putStrLn "Type your message and press Enter. Type 'exit' or 'quit' to end."
   TIO.putStrLn "Emacs keybindings supported (C-a, C-e, C-k, etc.)\n"
 
   -- Get API key
   apiKeyValue <- getApiKey opts
 
-  -- Start conversation loop with haskeline
-  runInputT defaultSettings $ conversationLoop opts apiKeyValue []
+  -- Create initial system message with current time
+  systemMsg <- createSystemMessage
 
-conversationLoop :: Options -> Maybe T.Text -> ConversationHistory -> InputT IO ()
-conversationLoop opts apiKey history = do
+  -- Start conversation loop with haskeline
+  runInputT defaultSettings $ conversationLoop opts apiKeyValue mcpClients mcpCtx [systemMsg]
+
+conversationLoop :: Options -> Maybe T.Text -> [MCPClient] -> Maybe MCPContext -> ConversationHistory -> InputT IO ()
+conversationLoop opts apiKey mcpClients mcpCtx history = do
   -- Read user input with line editing support
   minput <- getInputLine "> "
 
@@ -95,6 +189,7 @@ conversationLoop opts apiKey history = do
                 , baseUrl = baseUrlOpt opts
                 , streaming = maybe False id (streamOpt opts)
                 , history = history  -- Pass conversation history to API
+                , mcpContext = mcpCtx
                 }
 
           -- Show spinner in interactive mode (always)
@@ -106,23 +201,109 @@ conversationLoop opts apiKey history = do
           case result of
             Left err -> do
               liftIO $ TIO.hPutStrLn stderr $ "Error: " <> T.pack (show err)
-              conversationLoop opts apiKey history
+              conversationLoop opts apiKey mcpClients mcpCtx history
             Right response -> do
-              let assistantMsg = content response
+              -- Check if there are tool calls
+              case Types.toolCalls response of
+                Just calls | not (null calls) -> do
+                  -- Execute tool calls
+                  liftIO $ TIO.putStrLn "\n[Executing tools...]"
+                  toolResults <- liftIO $ mapM (executeToolCall mcpClients) calls
+                  liftIO $ TIO.putStrLn ""
 
-              if maybe False id (streamOpt opts)
-                then liftIO $ TIO.putStrLn ""  -- Add newline after streaming
-                else liftIO $ TIO.putStrLn assistantMsg
+                  -- Build tool result message
+                  let toolResultText = T.intercalate "\n\n"
+                        [ "Tool: " <> Types.toolName tc <> "\nResult: " <> result
+                        | (tc, result) <- zip calls toolResults
+                        ]
 
-              liftIO $ hFlush stdout
-              liftIO $ TIO.putStrLn ""
+                  -- Add user message, assistant tool call, and tool results to history
+                  let updatedHistory = history ++ [Message "user" userInput]
 
-              -- Add both user and assistant messages to history
-              let updatedHistory = history ++ [Message "user" userInput, Message "assistant" assistantMsg]
+                  -- Make another API call with tool results
+                  let request' = LLMRequest
+                        { prompt = "Based on the tool results:\n" <> toolResultText
+                        , model = modelName opts
+                        , apiKey = apiKey
+                        , baseUrl = baseUrlOpt opts
+                        , streaming = maybe False id (streamOpt opts)
+                        , history = updatedHistory
+                        , mcpContext = mcpCtx
+                        }
 
-              -- Continue conversation
-              conversationLoop opts apiKey updatedHistory
+                  liftIO startSpinner
+                  result' <- liftIO $ callProvider opts request'
+                  liftIO stopSpinner
 
+                  case result' of
+                    Left err -> do
+                      liftIO $ TIO.hPutStrLn stderr $ "Error: " <> T.pack (show err)
+                      conversationLoop opts apiKey mcpClients mcpCtx updatedHistory
+                    Right response' -> do
+                      let finalMsg = content response'
+                      liftIO $ TIO.putStrLn finalMsg
+                      liftIO $ hFlush stdout
+                      liftIO $ TIO.putStrLn ""
+
+                      let finalHistory = updatedHistory ++ [Message "assistant" finalMsg]
+                      conversationLoop opts apiKey mcpClients mcpCtx finalHistory
+
+                _ -> do
+                  -- No tool calls, normal response
+                  let assistantMsg = content response
+
+                  if maybe False id (streamOpt opts)
+                    then liftIO $ TIO.putStrLn ""  -- Add newline after streaming
+                    else liftIO $ TIO.putStrLn assistantMsg
+
+                  liftIO $ hFlush stdout
+                  liftIO $ TIO.putStrLn ""
+
+                  -- Add both user and assistant messages to history
+                  let updatedHistory = history ++ [Message "user" userInput, Message "assistant" assistantMsg]
+
+                  -- Continue conversation
+                  conversationLoop opts apiKey mcpClients mcpCtx updatedHistory
+
+
+-- | Execute a tool call via MCP
+executeToolCall :: [MCPClient] -> Types.ToolCall -> IO T.Text
+executeToolCall clients tc = do
+  -- Display tool execution info
+  TIO.putStrLn $ "  🔧 " <> Types.toolName tc
+  case Data.Aeson.eitherDecode (LBS.fromStrict $ TE.encodeUtf8 $ Types.toolArguments tc) of
+    Right (Data.Aeson.Object obj) -> do
+      let args = [ Key.toText k <> ": " <> formatValue v | (k, v) <- Data.Aeson.KeyMap.toList obj ]
+      mapM_ (\arg -> TIO.putStrLn $ "     " <> arg) args
+    _ -> return ()
+
+  -- Try each client until one succeeds
+  results <- mapM (\client -> callTool client (Types.toolName tc) (decodeArgs $ Types.toolArguments tc)) clients
+
+  case [r | Right r <- results] of
+    (result:_) -> do
+      -- Parse the result to extract relevant text
+      case result of
+        Data.Aeson.Object obj ->
+          case Data.Aeson.KeyMap.lookup "content" obj of
+            Just (Data.Aeson.Array arr) ->
+              let textParts = [t | Data.Aeson.Object o <- toList arr, Just (Data.Aeson.String t) <- [Data.Aeson.KeyMap.lookup "text" o]]
+              in return $ T.intercalate "\n" textParts
+            _ -> return $ T.pack $ show result
+        _ -> return $ T.pack $ show result
+    [] -> return "Error: Tool call failed"
+  where
+    decodeArgs :: T.Text -> Data.Aeson.Value
+    decodeArgs argsText = case Data.Aeson.eitherDecode (LBS.fromStrict $ TE.encodeUtf8 argsText) of
+      Right val -> val
+      Left _ -> Data.Aeson.object []
+
+    formatValue :: Data.Aeson.Value -> T.Text
+    formatValue (Data.Aeson.String s) = "\"" <> s <> "\""
+    formatValue (Data.Aeson.Number n) = T.pack (show n)
+    formatValue (Data.Aeson.Bool b) = T.pack (show b)
+    formatValue Data.Aeson.Null = "null"
+    formatValue v = T.pack (show v)
 
 getApiKey :: Options -> IO (Maybe T.Text)
 getApiKey opts = case apiKeyOpt opts of

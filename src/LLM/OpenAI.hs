@@ -7,7 +7,7 @@ import Control.Exception (try, SomeException)
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import Data.Aeson (FromJSON(..), ToJSON(..), object, (.=), (.:), (.:?), withObject, decode)
+import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, decode)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as LBS
@@ -25,27 +25,88 @@ import qualified LLM.Types as Types
 import LLM.Types (LLMRequest, LLMResponse(..), LLMError(..))
 import LLM.Spinner (stopSpinner)
 
+data OpenAIToolCall = OpenAIToolCall
+  { toolCallId :: Text
+  , toolCallType :: Text
+  , toolCallFunction :: OpenAIToolCallFunction
+  } deriving (Show)
+
+data OpenAIToolCallFunction = OpenAIToolCallFunction
+  { toolCallFunctionName :: Text
+  , toolCallFunctionArguments :: Text
+  } deriving (Show)
+
+instance ToJSON OpenAIToolCall where
+  toJSON (OpenAIToolCall tid ttype func) =
+    object ["id" .= tid, "type" .= ttype, "function" .= func]
+
+instance FromJSON OpenAIToolCall where
+  parseJSON = withObject "OpenAIToolCall" $ \v ->
+    OpenAIToolCall
+      <$> v .: "id"
+      <*> v .: "type"
+      <*> v .: "function"
+
+instance ToJSON OpenAIToolCallFunction where
+  toJSON (OpenAIToolCallFunction name args) =
+    object ["name" .= name, "arguments" .= args]
+
+instance FromJSON OpenAIToolCallFunction where
+  parseJSON = withObject "OpenAIToolCallFunction" $ \v ->
+    OpenAIToolCallFunction
+      <$> v .: "name"
+      <*> v .: "arguments"
+
 data OpenAIMessage = OpenAIMessage
   { role :: Text
-  , messageContent :: Text
+  , messageContent :: Maybe Text
+  , toolCalls :: Maybe [OpenAIToolCall]
   } deriving (Show)
 
 instance ToJSON OpenAIMessage where
-  toJSON (OpenAIMessage r c) = object ["role" .= r, "content" .= c]
+  toJSON (OpenAIMessage r (Just c) Nothing) = object ["role" .= r, "content" .= c]
+  toJSON (OpenAIMessage r Nothing (Just tc)) = object ["role" .= r, "tool_calls" .= tc]
+  toJSON (OpenAIMessage r (Just c) (Just tc)) = object ["role" .= r, "content" .= c, "tool_calls" .= tc]
+  toJSON (OpenAIMessage r Nothing Nothing) = object ["role" .= r, "content" .= ("" :: Text)]
 
 instance FromJSON OpenAIMessage where
   parseJSON = withObject "OpenAIMessage" $ \v ->
-    OpenAIMessage <$> v .: "role" <*> v .: "content"
+    OpenAIMessage
+      <$> v .: "role"
+      <*> v .:? "content"
+      <*> v .:? "tool_calls"
+
+data OpenAITool = OpenAITool
+  { toolType :: Text
+  , function :: OpenAIFunction
+  } deriving (Show)
+
+data OpenAIFunction = OpenAIFunction
+  { functionName :: Text
+  , functionDescription :: Text
+  , parameters :: Value
+  } deriving (Show)
+
+instance ToJSON OpenAITool where
+  toJSON (OpenAITool t f) =
+    object ["type" .= t, "function" .= f]
+
+instance ToJSON OpenAIFunction where
+  toJSON (OpenAIFunction n d p) =
+    object ["name" .= n, "description" .= d, "parameters" .= p]
 
 data OpenAIRequest = OpenAIRequest
   { requestModel :: Text
   , messages :: [OpenAIMessage]
   , requestStream :: Bool
+  , tools :: Maybe [OpenAITool]
   } deriving (Show)
 
 instance ToJSON OpenAIRequest where
-  toJSON (OpenAIRequest m msgs s) =
+  toJSON (OpenAIRequest m msgs s Nothing) =
     object ["model" .= m, "messages" .= msgs, "stream" .= s]
+  toJSON (OpenAIRequest m msgs s (Just ts)) =
+    object ["model" .= m, "messages" .= msgs, "stream" .= s, "tools" .= ts]
 
 data OpenAIChoice = OpenAIChoice
   { message :: OpenAIMessage
@@ -88,6 +149,13 @@ instance FromJSON OpenAIStreamResponse where
   parseJSON = withObject "OpenAIStreamResponse" $ \v ->
     OpenAIStreamResponse <$> v .: "choices"
 
+-- Convert MCP tools to OpenAI format
+mcpToolsToOpenAI :: Types.MCPContext -> [OpenAITool]
+mcpToolsToOpenAI ctx =
+  [ OpenAITool "function" (OpenAIFunction name desc schema)
+  | (name, desc, schema) <- Types.mcpTools ctx
+  ]
+
 callOpenAI :: LLMRequest -> IO (Either LLMError LLMResponse)
 callOpenAI llmReq = do
   let apiKey' = case Types.apiKey llmReq of
@@ -97,20 +165,25 @@ callOpenAI llmReq = do
         Nothing -> "gpt-4o-mini"
         Just m -> m
       -- Build messages from history + current prompt
-      historyMessages = map (\msg -> OpenAIMessage (Types.role msg) (Types.messageContent msg)) (Types.history llmReq)
-      allMessages = historyMessages ++ [OpenAIMessage "user" (Types.prompt llmReq)]
+      historyMessages = map (\msg -> OpenAIMessage (Types.role msg) (Just $ Types.messageContent msg) Nothing) (Types.history llmReq)
+      allMessages = historyMessages ++ [OpenAIMessage "user" (Just $ Types.prompt llmReq) Nothing]
+      -- Convert MCP tools to OpenAI format
+      tools' = case Types.mcpContext llmReq of
+        Nothing -> Nothing
+        Just ctx -> if null (Types.mcpTools ctx) then Nothing else Just $ mcpToolsToOpenAI ctx
 
   if Types.streaming llmReq
-    then callOpenAIStream apiKey' model' allMessages
-    else callOpenAINonStream apiKey' model' allMessages
+    then callOpenAIStream apiKey' model' allMessages tools'
+    else callOpenAINonStream apiKey' model' allMessages tools'
 
-callOpenAINonStream :: Text -> Text -> [OpenAIMessage] -> IO (Either LLMError LLMResponse)
-callOpenAINonStream apiKey' model' messages' = do
+callOpenAINonStream :: Text -> Text -> [OpenAIMessage] -> Maybe [OpenAITool] -> IO (Either LLMError LLMResponse)
+callOpenAINonStream apiKey' model' messages' tools' = do
   result <- try $ do
     let requestBody = OpenAIRequest
           { requestModel = model'
           , messages = messages'
           , requestStream = False
+          , tools = tools'
           }
 
     request' <- parseRequest "POST https://api.openai.com/v1/chat/completions"
@@ -126,15 +199,29 @@ callOpenAINonStream apiKey' model' messages' = do
     Right openAIResp ->
       case choices openAIResp of
         [] -> return $ Left $ APIError "No response from OpenAI"
-        (choice:_) -> return $ Right $ LLMResponse (messageContent $ message choice)
+        (choice:_) ->
+          let msg = message choice
+              content' = case messageContent msg of
+                Just c -> c
+                Nothing -> ""
+              toolCalls' = case LLM.OpenAI.toolCalls msg of
+                Just calls -> Just $ map convertToolCall calls
+                Nothing -> Nothing
+          in return $ Right $ LLMResponse content' toolCalls'
+  where
+    convertToolCall tc = Types.ToolCall
+      (toolCallId tc)
+      (toolCallFunctionName $ toolCallFunction tc)
+      (toolCallFunctionArguments $ toolCallFunction tc)
 
-callOpenAIStream :: Text -> Text -> [OpenAIMessage] -> IO (Either LLMError LLMResponse)
-callOpenAIStream apiKey' model' messages' = do
+callOpenAIStream :: Text -> Text -> [OpenAIMessage] -> Maybe [OpenAITool] -> IO (Either LLMError LLMResponse)
+callOpenAIStream apiKey' model' messages' tools' = do
   result <- try $ do
     let requestBody = OpenAIRequest
           { requestModel = model'
           , messages = messages'
           , requestStream = True
+          , tools = tools'
           }
 
     request' <- parseRequest "POST https://api.openai.com/v1/chat/completions"
@@ -149,7 +236,7 @@ callOpenAIStream apiKey' model' messages' = do
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
-    Right () -> return $ Right $ LLMResponse ""
+    Right () -> return $ Right $ LLMResponse "" Nothing
 
 parseSSE :: Monad m => ConduitT BS.ByteString BS.ByteString m ()
 parseSSE = CL.mapMaybe extractData

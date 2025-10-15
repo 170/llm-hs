@@ -12,6 +12,8 @@ import Data.Aeson (FromJSON(..), ToJSON(..), object, (.=), (.:), (.:?), (.!=), w
 import qualified Data.ByteString.Lazy as LBS
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import System.Directory (doesFileExist, getHomeDirectory)
 import System.FilePath ((</>))
 import Control.Exception (try, SomeException)
@@ -22,6 +24,7 @@ data MCPServer = MCPServer
   { serverName :: Text
   , serverCommand :: Text
   , serverArgs :: [Text]
+  , serverEnv :: Maybe (Map Text Text)
   } deriving (Show)
 
 instance FromJSON MCPServer where
@@ -30,10 +33,11 @@ instance FromJSON MCPServer where
       <$> v .: "name"
       <*> v .: "command"
       <*> v .:? "args" .!= []
+      <*> v .:? "env"
 
 instance ToJSON MCPServer where
-  toJSON (MCPServer name cmd args) =
-    object ["name" .= name, "command" .= cmd, "args" .= args]
+  toJSON (MCPServer name cmd args env) =
+    object ["name" .= name, "command" .= cmd, "args" .= args, "env" .= env]
 
 -- Main configuration
 data Config = Config

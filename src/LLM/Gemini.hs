@@ -112,7 +112,7 @@ callGeminiNonStream apiKey' model' contents' = do
         (candidate:_) ->
           case parts (candidateContent candidate) of
             [] -> return $ Left $ APIError "No content in Gemini response"
-            (part:_) -> return $ Right $ LLMResponse (partText part)
+            (part:_) -> return $ Right $ LLMResponse (partText part) Nothing
 
 callGeminiStream :: Text -> Text -> [GeminiContent] -> IO (Either LLMError LLMResponse)
 callGeminiStream apiKey' model' contents' = do
@@ -135,7 +135,7 @@ callGeminiStream apiKey' model' contents' = do
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
-    Right () -> return $ Right $ LLMResponse ""
+    Right () -> return $ Right $ LLMResponse "" Nothing
 
 parseGeminiSSE :: Monad m => ConduitT BS.ByteString BS.ByteString m ()
 parseGeminiSSE = CL.mapMaybe extractData
