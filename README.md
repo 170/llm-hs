@@ -95,6 +95,7 @@ Exit the interactive mode by typing `exit`, `quit`, `:q`, or pressing `Ctrl-D`.
 - `-k, --api-key API_KEY` - API key for the provider
 - `-u, --base-url BASE_URL` - Base URL for the provider (mainly for Ollama, default: localhost:11434)
 - `-s, --stream` - Enable streaming output (real-time response)
+- `-c, --color MODE` - Color mode (auto, always, never) - default: auto
 
 ### Environment Variables
 
@@ -131,6 +132,11 @@ echo "Tell me a story" | llm-hs-exe -p openai --stream
 echo "Explain quantum computing" | llm-hs-exe -p claude --stream
 echo "Write a haiku" | llm-hs-exe -p ollama --stream
 echo "What is functional programming?" | llm-hs-exe -p gemini --stream
+
+# Color output examples
+echo "Hello, world!" | llm-hs-exe -p openai --color always  # Force color output
+echo "Hello, world!" | llm-hs-exe -p claude --color never   # Disable color output
+llm-hs-exe -p openai --color auto  # Auto-detect terminal color support (default)
 ```
 
 ### Streaming Support
@@ -155,6 +161,35 @@ echo "Explain monads" | llm-hs-exe -p claude --stream
 echo "Tell me a joke" | llm-hs-exe -p gemini -s
 ```
 
+### Color Output
+
+**Colored output makes it easier to distinguish between different parts of the conversation!** 🎨
+
+The tool supports colored output with three modes:
+
+- **auto** (default): Automatically detects if the terminal supports color
+- **always**: Always use colored output, even when piping to a file
+- **never**: Disable colored output
+
+Color scheme:
+- **System messages** (cyan): Informational messages and instructions
+- **User messages** (green): Your input messages (in conversation history)
+- **Assistant messages** (blue): LLM responses
+- **Error messages** (red): Error and warning messages
+- **Info messages** (yellow): Headers and status information
+- **Tool messages** (magenta): MCP tool execution details
+
+```bash
+# Use default auto-detection
+llm-hs-exe -p openai
+
+# Force color output (useful when piping)
+llm-hs-exe -p claude --color always
+
+# Disable colors (useful for logging)
+llm-hs-exe -p openai --color never
+```
+
 ### Default Models
 
 - OpenAI: `gpt-4o-mini`
@@ -173,6 +208,7 @@ You can create a configuration file at `~/.llm-hs.json` to set default values fo
   "provider": "claude",
   "model": "claude-3-5-sonnet-20241022",
   "stream": true,
+  "color": "auto",
   "apiKey": "your-api-key-here",
   "baseUrl": "http://localhost:11434"
 }
@@ -183,6 +219,7 @@ You can create a configuration file at `~/.llm-hs.json` to set default values fo
 - `provider` (string): Default LLM provider (`"openai"`, `"claude"`, `"ollama"`, `"gemini"`)
 - `model` (string): Default model name for the provider
 - `stream` (boolean): Enable streaming output by default
+- `color` (string): Color mode (`"auto"`, `"always"`, `"never"`) - default: `"auto"`
 - `apiKey` (string): API key for the provider (optional, can use environment variables instead)
 - `baseUrl` (string): Base URL for the provider (mainly for Ollama)
 - `mcpServers` (array): MCP server configurations (see MCP Support section below)

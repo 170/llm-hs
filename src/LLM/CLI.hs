@@ -9,7 +9,7 @@ module LLM.CLI
 import Data.Text (Text)
 import qualified Data.Text as T
 import Options.Applicative
-import LLM.Types (Provider(..))
+import LLM.Types (Provider(..), ColorMode(..))
 import LLM.Config (Config(..))
 
 data Options = Options
@@ -18,6 +18,7 @@ data Options = Options
   , apiKeyOpt :: Maybe Text
   , baseUrlOpt :: Maybe Text
   , streamOpt :: Maybe Bool
+  , colorOpt :: Maybe ColorMode
   } deriving (Show)
 
 providerParser :: Parser (Maybe Provider)
@@ -34,6 +35,20 @@ providerParser = optional $ option (maybeReader parseProvider)
     parseProvider "ollama" = Just Ollama
     parseProvider "gemini" = Just Gemini
     parseProvider _ = Nothing
+
+colorModeParser :: Parser (Maybe ColorMode)
+colorModeParser = optional $ option (maybeReader parseColorMode)
+  (  long "color"
+  <> short 'c'
+  <> metavar "MODE"
+  <> help "Color mode (auto, always, never) - default: auto"
+  )
+  where
+    parseColorMode :: String -> Maybe ColorMode
+    parseColorMode "auto" = Just AutoColor
+    parseColorMode "always" = Just AlwaysColor
+    parseColorMode "never" = Just NoColor
+    parseColorMode _ = Nothing
 
 optionsParser :: Parser Options
 optionsParser = Options
@@ -61,6 +76,7 @@ optionsParser = Options
       <> short 's'
       <> help "Enable streaming output (real-time)"
       ))
+  <*> colorModeParser
 
 parseOptions :: IO Options
 parseOptions = execParser opts
@@ -77,7 +93,10 @@ mergeConfigWithOptions :: Maybe Config -> Options -> Either String Options
 mergeConfigWithOptions Nothing opts =
   case provider opts of
     Nothing -> Left "No provider specified. Please specify via --provider or in ~/.llm-hs.json"
-    Just _ -> Right $ opts { streamOpt = Just (maybe False id (streamOpt opts)) }
+    Just _ -> Right $ opts
+      { streamOpt = Just (maybe False id (streamOpt opts))
+      , colorOpt = Just (maybe AutoColor id (colorOpt opts))
+      }
 mergeConfigWithOptions (Just config) opts =
   let mergedProvider = case provider opts of
         Just p -> Just p
@@ -94,6 +113,9 @@ mergeConfigWithOptions (Just config) opts =
       mergedStream = case streamOpt opts of
         Just s -> Just s
         Nothing -> defaultStream config
+      mergedColor = case colorOpt opts of
+        Just c -> Just c
+        Nothing -> defaultColor config
   in case mergedProvider of
        Nothing -> Left "No provider specified. Please specify via --provider or in ~/.llm-hs.json"
        Just p -> Right $ Options
@@ -102,4 +124,5 @@ mergeConfigWithOptions (Just config) opts =
          , apiKeyOpt = mergedApiKey
          , baseUrlOpt = mergedBaseUrl
          , streamOpt = Just (maybe False id mergedStream)
+         , colorOpt = Just (maybe AutoColor id mergedColor)
          }

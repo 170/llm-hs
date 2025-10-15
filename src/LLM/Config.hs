@@ -17,7 +17,7 @@ import qualified Data.Map.Strict as Map
 import System.Directory (doesFileExist, getHomeDirectory)
 import System.FilePath ((</>))
 import Control.Exception (try, SomeException)
-import LLM.Types (Provider(..))
+import LLM.Types (Provider(..), ColorMode(..))
 
 -- MCP Server configuration
 data MCPServer = MCPServer
@@ -46,6 +46,7 @@ data Config = Config
   , defaultApiKey :: Maybe Text
   , defaultBaseUrl :: Maybe Text
   , defaultStream :: Maybe Bool
+  , defaultColor :: Maybe ColorMode
   , mcpServers :: [MCPServer]
   } deriving (Show)
 
@@ -53,12 +54,15 @@ instance FromJSON Config where
   parseJSON = withObject "Config" $ \v -> do
     provider <- v .:? "provider"
     let parsedProvider = provider >>= parseProvider
+    color <- v .:? "color"
+    let parsedColor = color >>= parseColor
     Config
       <$> pure parsedProvider
       <*> v .:? "model"
       <*> v .:? "apiKey"
       <*> v .:? "baseUrl"
       <*> v .:? "stream"
+      <*> pure parsedColor
       <*> v .:? "mcpServers" .!= []
     where
       parseProvider :: Text -> Maybe Provider
@@ -68,14 +72,21 @@ instance FromJSON Config where
       parseProvider "gemini" = Just Gemini
       parseProvider _ = Nothing
 
+      parseColor :: Text -> Maybe ColorMode
+      parseColor "auto" = Just AutoColor
+      parseColor "always" = Just AlwaysColor
+      parseColor "never" = Just NoColor
+      parseColor _ = Nothing
+
 instance ToJSON Config where
-  toJSON (Config prov model key baseUrl stream servers) =
+  toJSON (Config prov model key baseUrl stream color servers) =
     object
       [ "provider" .= fmap providerToText prov
       , "model" .= model
       , "apiKey" .= key
       , "baseUrl" .= baseUrl
       , "stream" .= stream
+      , "color" .= fmap colorToText color
       , "mcpServers" .= servers
       ]
     where
@@ -84,6 +95,11 @@ instance ToJSON Config where
       providerToText Claude = "claude"
       providerToText Ollama = "ollama"
       providerToText Gemini = "gemini"
+
+      colorToText :: ColorMode -> Text
+      colorToText AutoColor = "auto"
+      colorToText AlwaysColor = "always"
+      colorToText NoColor = "never"
 
 -- Get the configuration file path
 getConfigPath :: IO FilePath

@@ -10,6 +10,7 @@ module LLM.Types
   , ConversationHistory
   , MCPContext(..)
   , ToolCall(..)
+  , ColorMode(..)
   ) where
 
 import Data.Aeson (Value)
@@ -22,6 +23,13 @@ data Provider
   | Claude
   | Ollama
   | Gemini
+  deriving (Show, Eq, Generic)
+
+-- | Color mode for output
+data ColorMode
+  = NoColor      -- ^ Disable colored output
+  | AutoColor    -- ^ Automatically detect if terminal supports color
+  | AlwaysColor  -- ^ Always use colored output
   deriving (Show, Eq, Generic)
 
 -- | Request to LLM

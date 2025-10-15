@@ -20,7 +20,7 @@ import System.Console.Haskeline
 import Control.Monad.IO.Class (liftIO)
 import Control.Exception (bracket)
 import qualified LLM.Types as Types
-import LLM.Types (LLMRequest(..), LLMResponse(..), LLMError(..), Message(..), ConversationHistory, MCPContext(..), Provider(..))
+import LLM.Types (LLMRequest(..), LLMResponse(..), LLMError(..), Message(..), ConversationHistory, MCPContext(..), Provider(..), ColorMode(..))
 import LLM.OpenAI (callOpenAI)
 import LLM.Claude (callClaude)
 import LLM.Ollama (callOllama)
@@ -29,6 +29,7 @@ import LLM.CLI (Options(..))
 import LLM.Spinner (startSpinner, stopSpinner)
 import LLM.Config (loadConfig, MCPServer, Config(..))
 import LLM.MCP (MCPClient, startMCPServer, stopMCPServer, listTools, callTool, MCPTool(..))
+import qualified LLM.Color as Color
 
 runLLM :: Options -> IO ()
 runLLM opts = do
@@ -138,26 +139,41 @@ runInteractive opts mcpClients mcpCtx = do
   let prov = case provider opts of
         Just p -> p
         Nothing -> error "Provider must be set"  -- Should never happen after merge
-  TIO.putStrLn "=== Interactive Mode ==="
-  TIO.putStrLn $ "Provider: " <> T.pack (show prov)
+      colorMode = maybe AutoColor id (colorOpt opts)
+
+  -- Print header with colors
+  headerText <- Color.infoColor colorMode "=== Interactive Mode ==="
+  TIO.putStrLn headerText
+
+  providerText <- Color.infoColor colorMode $ "Provider: " <> T.pack (show prov)
+  TIO.putStrLn providerText
+
   let defaultModel = case prov of
         OpenAI -> "gpt-4o-mini"
         Claude -> "claude-3-5-sonnet-20241022"
         Ollama -> "llama3.2"
         Gemini -> "gemini-1.5-flash"
   case modelName opts of
-    Just model -> TIO.putStrLn $ "Model: " <> model
-    Nothing -> TIO.putStrLn $ "Model: " <> defaultModel <> " (default)"
+    Just model -> do
+      modelText <- Color.infoColor colorMode $ "Model: " <> model
+      TIO.putStrLn modelText
+    Nothing -> do
+      modelText <- Color.infoColor colorMode $ "Model: " <> defaultModel <> " (default)"
+      TIO.putStrLn modelText
 
   -- Show MCP status
   case mcpCtx of
     Nothing -> return ()
     Just ctx -> do
       let toolCount = length (mcpTools ctx)
-      TIO.putStrLn $ "MCP Tools: " <> T.pack (show toolCount) <> " tools available"
+      mcpText <- Color.infoColor colorMode $ "MCP Tools: " <> T.pack (show toolCount) <> " tools available"
+      TIO.putStrLn mcpText
 
-  TIO.putStrLn "Type your message and press Enter. Type 'exit' or 'quit' to end."
-  TIO.putStrLn "Emacs keybindings supported (C-a, C-e, C-k, etc.)\n"
+  instructionText1 <- Color.systemColor colorMode "Type your message and press Enter. Type 'exit' or 'quit' to end."
+  TIO.putStrLn instructionText1
+
+  instructionText2 <- Color.systemColor colorMode "Emacs keybindings supported (C-a, C-e, C-k, etc.)\n"
+  TIO.putStrLn instructionText2
 
   -- Get API key
   apiKeyValue <- getApiKey opts
@@ -166,10 +182,10 @@ runInteractive opts mcpClients mcpCtx = do
   systemMsg <- createSystemMessage
 
   -- Start conversation loop with haskeline
-  runInputT defaultSettings $ conversationLoop opts apiKeyValue mcpClients mcpCtx [systemMsg]
+  runInputT defaultSettings $ conversationLoop opts apiKeyValue mcpClients mcpCtx colorMode [systemMsg]
 
-conversationLoop :: Options -> Maybe T.Text -> [MCPClient] -> Maybe MCPContext -> ConversationHistory -> InputT IO ()
-conversationLoop opts apiKey mcpClients mcpCtx history = do
+conversationLoop :: Options -> Maybe T.Text -> [MCPClient] -> Maybe MCPContext -> ColorMode -> ConversationHistory -> InputT IO ()
+conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
   -- Read user input with line editing support
   minput <- getInputLine "> "
 
@@ -200,15 +216,17 @@ conversationLoop opts apiKey mcpClients mcpCtx history = do
           -- Handle the result and update history
           case result of
             Left err -> do
-              liftIO $ TIO.hPutStrLn stderr $ "Error: " <> T.pack (show err)
-              conversationLoop opts apiKey mcpClients mcpCtx history
+              errorText <- liftIO $ Color.errorColor colorMode $ "Error: " <> T.pack (show err)
+              liftIO $ TIO.hPutStrLn stderr errorText
+              conversationLoop opts apiKey mcpClients mcpCtx colorMode history
             Right response -> do
               -- Check if there are tool calls
               case Types.toolCalls response of
                 Just calls | not (null calls) -> do
                   -- Execute tool calls
-                  liftIO $ TIO.putStrLn "\n[Executing tools...]"
-                  toolResults <- liftIO $ mapM (executeToolCall mcpClients) calls
+                  toolHeaderText <- liftIO $ Color.toolColor colorMode "\n[Executing tools...]"
+                  liftIO $ TIO.putStrLn toolHeaderText
+                  toolResults <- liftIO $ mapM (executeToolCall mcpClients colorMode) calls
                   liftIO $ TIO.putStrLn ""
 
                   -- Build tool result message
@@ -237,16 +255,18 @@ conversationLoop opts apiKey mcpClients mcpCtx history = do
 
                   case result' of
                     Left err -> do
-                      liftIO $ TIO.hPutStrLn stderr $ "Error: " <> T.pack (show err)
-                      conversationLoop opts apiKey mcpClients mcpCtx updatedHistory
+                      errorText <- liftIO $ Color.errorColor colorMode $ "Error: " <> T.pack (show err)
+                      liftIO $ TIO.hPutStrLn stderr errorText
+                      conversationLoop opts apiKey mcpClients mcpCtx colorMode updatedHistory
                     Right response' -> do
                       let finalMsg = content response'
-                      liftIO $ TIO.putStrLn finalMsg
+                      assistantText <- liftIO $ Color.assistantColor colorMode finalMsg
+                      liftIO $ TIO.putStrLn assistantText
                       liftIO $ hFlush stdout
                       liftIO $ TIO.putStrLn ""
 
                       let finalHistory = updatedHistory ++ [Message "assistant" finalMsg]
-                      conversationLoop opts apiKey mcpClients mcpCtx finalHistory
+                      conversationLoop opts apiKey mcpClients mcpCtx colorMode finalHistory
 
                 _ -> do
                   -- No tool calls, normal response
@@ -254,7 +274,9 @@ conversationLoop opts apiKey mcpClients mcpCtx history = do
 
                   if maybe False id (streamOpt opts)
                     then liftIO $ TIO.putStrLn ""  -- Add newline after streaming
-                    else liftIO $ TIO.putStrLn assistantMsg
+                    else do
+                      assistantText <- liftIO $ Color.assistantColor colorMode assistantMsg
+                      liftIO $ TIO.putStrLn assistantText
 
                   liftIO $ hFlush stdout
                   liftIO $ TIO.putStrLn ""
@@ -263,18 +285,21 @@ conversationLoop opts apiKey mcpClients mcpCtx history = do
                   let updatedHistory = history ++ [Message "user" userInput, Message "assistant" assistantMsg]
 
                   -- Continue conversation
-                  conversationLoop opts apiKey mcpClients mcpCtx updatedHistory
+                  conversationLoop opts apiKey mcpClients mcpCtx colorMode updatedHistory
 
 
 -- | Execute a tool call via MCP
-executeToolCall :: [MCPClient] -> Types.ToolCall -> IO T.Text
-executeToolCall clients tc = do
+executeToolCall :: [MCPClient] -> ColorMode -> Types.ToolCall -> IO T.Text
+executeToolCall clients colorMode tc = do
   -- Display tool execution info
-  TIO.putStrLn $ "  🔧 " <> Types.toolName tc
+  toolNameText <- Color.toolColor colorMode $ "  🔧 " <> Types.toolName tc
+  TIO.putStrLn toolNameText
   case Data.Aeson.eitherDecode (LBS.fromStrict $ TE.encodeUtf8 $ Types.toolArguments tc) of
     Right (Data.Aeson.Object obj) -> do
       let args = [ Key.toText k <> ": " <> formatValue v | (k, v) <- Data.Aeson.KeyMap.toList obj ]
-      mapM_ (\arg -> TIO.putStrLn $ "     " <> arg) args
+      mapM_ (\arg -> do
+        argText <- Color.systemColor colorMode $ "     " <> arg
+        TIO.putStrLn argText) args
     _ -> return ()
 
   -- Try each client until one succeeds
@@ -331,10 +356,16 @@ callProvider opts request =
     Gemini -> callGemini request
 
 handleResult :: Options -> Either LLMError LLMResponse -> IO ()
-handleResult opts result = case result of
-  Left err -> TIO.hPutStrLn stderr $ "Error: " <> T.pack (show err)
-  Right response -> do
-    if maybe False id (streamOpt opts)
-      then TIO.putStrLn ""  -- Add newline after streaming
-      else TIO.putStrLn $ content response
-    hFlush stdout
+handleResult opts result = do
+  let colorMode = maybe AutoColor id (colorOpt opts)
+  case result of
+    Left err -> do
+      errorText <- Color.errorColor colorMode $ "Error: " <> T.pack (show err)
+      TIO.hPutStrLn stderr errorText
+    Right response -> do
+      if maybe False id (streamOpt opts)
+        then TIO.putStrLn ""  -- Add newline after streaming
+        else do
+          assistantText <- Color.assistantColor colorMode $ content response
+          TIO.putStrLn assistantText
+      hFlush stdout
