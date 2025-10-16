@@ -212,15 +212,18 @@ callGeminiStream apiKey' model' contents' tools' = do
     request <- buildGeminiRequest apiKey' model' contents' tools' True
     withResponse request $ \response -> do
       firstChunkRef <- newIORef True
+      toolCallsRef <- newIORef Nothing
       runConduit $ responseBody response
         .| CC.linesUnboundedAscii
         .| CL.mapMaybe extractData
-        .| CL.mapM_ (processGeminiChunk firstChunkRef)
-      return ()
+        .| CL.mapM_ (processGeminiChunkWithTools firstChunkRef toolCallsRef)
+      -- Read collected tool calls
+      collectedToolCalls <- readIORef toolCallsRef
+      return collectedToolCalls
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
-    Right () -> return $ Right $ LLMResponse "" Nothing
+    Right toolCalls' -> return $ Right $ LLMResponse "" toolCalls'
   where
     extractData line
       | "data: " `BS.isPrefixOf` line = Just $ BS.drop 6 line
@@ -250,3 +253,38 @@ processGeminiChunk firstChunkRef chunk
               [] -> return ()
           [] -> return ()
       Left _ -> return ()
+
+processGeminiChunkWithTools :: IORef Bool -> IORef (Maybe [Types.ToolCall]) -> BS.ByteString -> IO ()
+processGeminiChunkWithTools firstChunkRef toolCallsRef chunk
+  | BS.null chunk = return ()
+  | otherwise = case eitherDecode (LBS.fromStrict chunk) of
+      Right (geminiResp :: GeminiResponse) ->
+        case candidates geminiResp of
+          (candidate:_) ->
+            let partsList = parts (candidateContent candidate)
+                -- Extract text parts
+                texts = [txt | GeminiPart (Just txt) _ <- partsList, not (T.null txt)]
+                -- Extract function calls
+                functionCalls = [fc | GeminiPart _ (Just fc) <- partsList]
+            in do
+              -- Output text content
+              when (not $ null texts) $ do
+                let txt = T.concat texts
+                isFirst <- readIORef firstChunkRef
+                when isFirst $ do
+                  writeIORef firstChunkRef False
+                  stopSpinner
+                TIO.putStr txt
+                hFlush stdout
+              -- Collect tool calls
+              when (not $ null functionCalls) $ do
+                let convertedCalls = zipWith convertFunctionCall [1..] functionCalls
+                writeIORef toolCallsRef (Just convertedCalls)
+          [] -> return ()
+      Left _ -> return ()
+  where
+    convertFunctionCall :: Int -> GeminiFunctionCall -> Types.ToolCall
+    convertFunctionCall idx fc = Types.ToolCall
+      (T.pack $ "call_" <> show idx)
+      (fcName fc)
+      (TE.decodeUtf8 $ LBS.toStrict $ encode $ fcArgs fc)

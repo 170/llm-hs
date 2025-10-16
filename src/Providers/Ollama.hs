@@ -223,14 +223,17 @@ callOllamaChatStream baseUrl' model' messages' tools' = do
     let request = setRequestBodyJSON requestBody request'
     withResponse request $ \resp -> do
       firstChunkRef <- newIORef True
+      toolCallsRef <- newIORef Nothing
       runConduit $ responseBody resp
         .| CC.linesUnboundedAscii
-        .| CL.mapM_ (processChatChunk firstChunkRef)
-      return ()
+        .| CL.mapM_ (processChatChunkWithTools firstChunkRef toolCallsRef)
+      -- Read collected tool calls
+      collectedToolCalls <- readIORef toolCallsRef
+      return collectedToolCalls
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
-    Right () -> return $ Right $ LLMResponse "" Nothing
+    Right toolCalls' -> return $ Right $ LLMResponse "" toolCalls'
 
 processChatChunk :: IORef Bool -> BS.ByteString -> IO ()
 processChatChunk firstChunkRef chunk
@@ -246,6 +249,35 @@ processChatChunk firstChunkRef chunk
         TIO.putStr txt
         hFlush stdout
       Left _ -> return ()
+
+processChatChunkWithTools :: IORef Bool -> IORef (Maybe [Types.ToolCall]) -> BS.ByteString -> IO ()
+processChatChunkWithTools firstChunkRef toolCallsRef chunk
+  | BS.null chunk = return ()
+  | otherwise = case eitherDecode (LBS.fromStrict chunk) of
+      Right (chatResp :: OllamaChatResponse) -> do
+        let msg = chatRespMessage chatResp
+            txt = respMsgContent msg
+        -- Output text content
+        when (not $ T.null txt) $ do
+          isFirst <- readIORef firstChunkRef
+          when isFirst $ do
+            writeIORef firstChunkRef False
+            stopSpinner
+          TIO.putStr txt
+          hFlush stdout
+        -- Collect tool calls
+        case respMsgToolCalls msg of
+          Just tcs -> do
+            let convertedCalls = zipWith convertToolCall [1..] tcs
+            writeIORef toolCallsRef (Just convertedCalls)
+          Nothing -> return ()
+      Left _ -> return ()
+  where
+    convertToolCall :: Int -> OllamaToolCall -> Types.ToolCall
+    convertToolCall idx tc = Types.ToolCall
+      (T.pack $ "call_" <> show idx)
+      (tcfName $ ollamaToolCallFunction tc)
+      (TE.decodeUtf8 $ LBS.toStrict $ encode $ tcfArguments $ ollamaToolCallFunction tc)
 
 -- Call Ollama generate endpoint (without tool support)
 callOllamaGenerate :: Text -> Text -> LLMRequest -> IO (Either LLMError LLMResponse)
