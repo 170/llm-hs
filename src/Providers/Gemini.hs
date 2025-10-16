@@ -5,7 +5,8 @@ module Providers.Gemini (geminiProvider) where
 
 import Control.Exception (try, SomeException)
 import Control.Monad (when)
-import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, eitherDecode)
+import Data.Aeson (FromJSON(..), ToJSON(..), Value(..), Object, object, (.=), (.:), (.:?), withObject, eitherDecode, encode)
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Conduit ((.|), runConduit)
@@ -16,7 +17,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
-import System.IO (hFlush, stdout)
+import System.IO (hFlush, stdout, stderr)
 import Network.HTTP.Simple
 import Network.HTTP.Conduit (responseBody)
 import qualified Core.Types as Types
@@ -113,10 +114,21 @@ geminiProvider = LLMProvider
   { callLLM = callGemini
   }
 
+-- | Clean JSON Schema by removing fields that Gemini doesn't accept
+cleanSchemaForGemini :: Value -> Value
+cleanSchemaForGemini (Object obj) =
+  let fieldsToRemove = ["$schema", "additionalProperties"]
+      cleanedObj = foldr KM.delete obj fieldsToRemove
+      -- Recursively clean nested objects
+      recursiveClean = KM.map cleanSchemaForGemini cleanedObj
+  in Object recursiveClean
+cleanSchemaForGemini (Array arr) = Array (fmap cleanSchemaForGemini arr)
+cleanSchemaForGemini other = other
+
 -- Convert MCP tools to Gemini format
 mcpToolsToGemini :: Types.MCPContext -> [GeminiTool]
 mcpToolsToGemini ctx =
-  [GeminiTool [GeminiFunctionDeclaration name desc schema | (name, desc, schema) <- Types.mcpTools ctx]]
+  [GeminiTool [GeminiFunctionDeclaration name desc (cleanSchemaForGemini schema) | (name, desc, schema) <- Types.mcpTools ctx]]
 
 callGemini :: LLMRequest -> IO (Either LLMError LLMResponse)
 callGemini llmReq = do
@@ -159,8 +171,14 @@ callGeminiNonStream apiKey' model' contents' tools' = do
     request <- buildGeminiRequest apiKey' model' contents' tools' False
     response <- httpLBS request
     let body = getResponseBody response
+        statusCode = getResponseStatusCode response
+    -- Debug: print error responses
+    when (statusCode /= 200) $ do
+      TIO.hPutStrLn stderr $ "Gemini API Error (status " <> T.pack (show statusCode) <> "):"
+      LBS.hPutStr stderr body
+      TIO.hPutStrLn stderr ""
     case eitherDecode body of
-      Left err -> return $ Left $ ParseError err
+      Left err -> return $ Left $ ParseError $ err ++ " (status: " ++ show statusCode ++ ")"
       Right geminiResp ->
         case candidates geminiResp of
           [] -> return $ Left $ APIError "No response from Gemini"
@@ -186,7 +204,7 @@ callGeminiNonStream apiKey' model' contents' tools' = do
     convertFunctionCall idx fc = Types.ToolCall
       (T.pack $ "call_" <> show idx)  -- Gemini doesn't provide IDs, so we generate them
       (fcName fc)
-      (T.pack $ show $ fcArgs fc)  -- Convert Value to JSON string
+      (TE.decodeUtf8 $ LBS.toStrict $ encode $ fcArgs fc)  -- Convert Value to JSON string
 
 callGeminiStream :: Text -> Text -> [GeminiContent] -> Maybe [GeminiTool] -> IO (Either LLMError LLMResponse)
 callGeminiStream apiKey' model' contents' tools' = do

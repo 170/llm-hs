@@ -270,8 +270,12 @@ conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
                       -- Just add newline and continue
                       liftIO $ TIO.putStrLn ""
 
-                      -- For history, we'll use a placeholder since streaming already output
-                      let finalHistory = updatedHistory ++ [Message "assistant" (content response')]
+                      -- For history, only add assistant message if content is not empty
+                      -- (streaming mode returns empty content since it was already output)
+                      let assistantContent = content response'
+                          finalHistory = if T.null assistantContent
+                                        then updatedHistory ++ [Message "assistant" "[Response from tool results]"]
+                                        else updatedHistory ++ [Message "assistant" assistantContent]
                       conversationLoop opts apiKey' mcpClients mcpCtx colorMode finalHistory
 
                 _ -> do
@@ -288,7 +292,11 @@ conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
                   liftIO $ TIO.putStrLn ""
 
                   -- Add both user and assistant messages to history
-                  let updatedHistory = history' ++ [Message "user" userInput, Message "assistant" assistantMsg]
+                  -- In streaming mode, content is empty so use a placeholder
+                  let assistantContent = if T.null assistantMsg
+                                        then "[Streamed response]"
+                                        else assistantMsg
+                      updatedHistory = history' ++ [Message "user" userInput, Message "assistant" assistantContent]
 
                   -- Continue conversation
                   conversationLoop opts apiKey' mcpClients mcpCtx colorMode updatedHistory
