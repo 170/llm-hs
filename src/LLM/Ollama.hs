@@ -195,10 +195,10 @@ callOllamaChatNonStream baseUrl' model' messages' tools' = do
       Right chatResp -> do
         let msg = chatRespMessage chatResp
             content' = respMsgContent msg
-            toolCalls = case respMsgToolCalls msg of
+            toolCalls' = case respMsgToolCalls msg of
               Nothing -> Nothing
               Just tcs -> Just $ zipWith convertToolCall [1..] tcs
-        return $ Right $ LLMResponse content' toolCalls
+        return $ Right $ LLMResponse content' toolCalls'
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)

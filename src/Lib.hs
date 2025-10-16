@@ -81,7 +81,7 @@ buildMCPContext clients = do
     getClientTools client = do
       result <- listTools client
       case result of
-        Left err -> return []
+        Left _ -> return []
         Right tools -> return
           [ (LLM.MCP.toolName tool, maybe "" id (LLM.MCP.toolDescription tool), LLM.MCP.toolInputSchema tool)
           | tool <- tools
@@ -148,17 +148,17 @@ runInteractive opts mcpClients mcpCtx = do
   providerText <- Color.infoColor colorMode $ "Provider: " <> T.pack (show prov)
   TIO.putStrLn providerText
 
-  let defaultModel = case prov of
+  let defaultModel' = case prov of
         OpenAI -> "gpt-4o-mini"
         Claude -> "claude-3-5-sonnet-20241022"
         Ollama -> "llama3.2"
         Gemini -> "gemini-1.5-flash"
   case modelName opts of
-    Just model -> do
-      modelText <- Color.infoColor colorMode $ "Model: " <> model
+    Just model' -> do
+      modelText <- Color.infoColor colorMode $ "Model: " <> model'
       TIO.putStrLn modelText
     Nothing -> do
-      modelText <- Color.infoColor colorMode $ "Model: " <> defaultModel <> " (default)"
+      modelText <- Color.infoColor colorMode $ "Model: " <> defaultModel' <> " (default)"
       TIO.putStrLn modelText
 
   -- Show MCP status
@@ -185,7 +185,7 @@ runInteractive opts mcpClients mcpCtx = do
   runInputT defaultSettings $ conversationLoop opts apiKeyValue mcpClients mcpCtx colorMode [systemMsg]
 
 conversationLoop :: Options -> Maybe T.Text -> [MCPClient] -> Maybe MCPContext -> ColorMode -> ConversationHistory -> InputT IO ()
-conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
+conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
   -- Read user input with line editing support
   minput <- getInputLine "> "
 
@@ -201,10 +201,10 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
           let request = LLMRequest
                 { prompt = userInput
                 , model = modelName opts
-                , apiKey = apiKey
+                , apiKey = apiKey'
                 , baseUrl = baseUrlOpt opts
                 , streaming = maybe False id (streamOpt opts)
-                , history = history  -- Pass conversation history to API
+                , history = history'  -- Pass conversation history to API
                 , mcpContext = mcpCtx
                 }
 
@@ -218,7 +218,7 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
             Left err -> do
               errorText <- liftIO $ Color.errorColor colorMode $ "Error: " <> T.pack (show err)
               liftIO $ TIO.hPutStrLn stderr errorText
-              conversationLoop opts apiKey mcpClients mcpCtx colorMode history
+              conversationLoop opts apiKey' mcpClients mcpCtx colorMode history'
             Right response -> do
               -- Check if there are tool calls
               case Types.toolCalls response of
@@ -236,12 +236,12 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
 
                   -- Build tool result message
                   let toolResultText = T.intercalate "\n\n"
-                        [ "Tool: " <> Types.toolName tc <> "\nResult: " <> result
-                        | (tc, result) <- zip calls toolResults
+                        [ "Tool: " <> Types.toolName tc <> "\nResult: " <> res
+                        | (tc, res) <- zip calls toolResults
                         ]
 
                   -- Add user message, assistant tool call, and tool results to history
-                  let updatedHistory = history ++ [Message "user" userInput]
+                  let updatedHistory = history' ++ [Message "user" userInput]
 
                   -- Make another API call with tool results
                   -- Don't include mcpContext to avoid sending tool definitions again
@@ -249,7 +249,7 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
                   let request' = LLMRequest
                         { prompt = "Based on the tool results:\n" <> toolResultText
                         , model = modelName opts
-                        , apiKey = apiKey
+                        , apiKey = apiKey'
                         , baseUrl = baseUrlOpt opts
                         , streaming = True
                         , history = updatedHistory
@@ -264,7 +264,7 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
                     Left err -> do
                       errorText <- liftIO $ Color.errorColor colorMode $ "Error: " <> T.pack (show err)
                       liftIO $ TIO.hPutStrLn stderr errorText
-                      conversationLoop opts apiKey mcpClients mcpCtx colorMode updatedHistory
+                      conversationLoop opts apiKey' mcpClients mcpCtx colorMode updatedHistory
                     Right response' -> do
                       -- Streaming mode outputs directly, so content will be empty
                       -- Just add newline and continue
@@ -272,7 +272,7 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
 
                       -- For history, we'll use a placeholder since streaming already output
                       let finalHistory = updatedHistory ++ [Message "assistant" (content response')]
-                      conversationLoop opts apiKey mcpClients mcpCtx colorMode finalHistory
+                      conversationLoop opts apiKey' mcpClients mcpCtx colorMode finalHistory
 
                 _ -> do
                   -- No tool calls, normal response
@@ -288,10 +288,10 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
                   liftIO $ TIO.putStrLn ""
 
                   -- Add both user and assistant messages to history
-                  let updatedHistory = history ++ [Message "user" userInput, Message "assistant" assistantMsg]
+                  let updatedHistory = history' ++ [Message "user" userInput, Message "assistant" assistantMsg]
 
                   -- Continue conversation
-                  conversationLoop opts apiKey mcpClients mcpCtx colorMode updatedHistory
+                  conversationLoop opts apiKey' mcpClients mcpCtx colorMode updatedHistory
 
 
 -- | Execute a tool call via MCP

@@ -11,9 +11,7 @@ module LLM.Config
 import Data.Aeson (FromJSON(..), ToJSON(..), object, (.=), (.:), (.:?), (.!=), withObject, eitherDecode)
 import qualified Data.ByteString.Lazy as LBS
 import Data.Text (Text)
-import qualified Data.Text as T
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
 import System.Directory (doesFileExist, getHomeDirectory)
 import System.FilePath ((</>))
 import Control.Exception (try, SomeException)

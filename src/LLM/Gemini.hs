@@ -165,8 +165,8 @@ callGeminiNonStream apiKey' model' contents' tools' = do
         case candidates geminiResp of
           [] -> return $ Left $ APIError "No response from Gemini"
           (candidate:_) -> do
-            let (textContent, toolCalls) = extractContent (parts $ candidateContent candidate)
-            return $ Right $ LLMResponse textContent toolCalls
+            let (textContent', toolCalls') = extractContent (parts $ candidateContent candidate)
+            return $ Right $ LLMResponse textContent' toolCalls'
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
@@ -176,11 +176,11 @@ callGeminiNonStream apiKey' model' contents' tools' = do
     extractContent partsList =
       let texts = [t | GeminiPart (Just t) _ <- partsList]
           functionCalls = [fc | GeminiPart _ (Just fc) <- partsList]
-          textContent = T.intercalate "\n" texts
-          toolCalls = if null functionCalls
-                      then Nothing
-                      else Just $ zipWith convertFunctionCall [1..] functionCalls
-      in (textContent, toolCalls)
+          textContent' = T.intercalate "\n" texts
+          toolCalls' = if null functionCalls
+                       then Nothing
+                       else Just $ zipWith convertFunctionCall [1..] functionCalls
+      in (textContent', toolCalls')
 
     convertFunctionCall :: Int -> GeminiFunctionCall -> Types.ToolCall
     convertFunctionCall idx fc = Types.ToolCall

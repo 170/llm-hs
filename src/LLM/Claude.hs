@@ -75,8 +75,8 @@ instance ToJSON ClaudeRequest where
 
 -- Content types for response
 data ClaudeContentBlock
-  = ClaudeTextBlock { textContent :: Text }
-  | ClaudeToolUseBlock { toolUse :: ClaudeToolUse }
+  = ClaudeTextBlock Text
+  | ClaudeToolUseBlock ClaudeToolUse
   deriving (Show)
 
 instance FromJSON ClaudeContentBlock where
@@ -178,8 +178,8 @@ callClaudeNonStream apiKey' model' messages' tools' = do
     case eitherDecode body of
       Left err -> return $ Left $ ParseError err
       Right claudeResp -> do
-        let (textContent, toolCalls) = extractContent (responseContent claudeResp)
-        return $ Right $ LLMResponse textContent toolCalls
+        let (textContent', toolCalls') = extractContent (responseContent claudeResp)
+        return $ Right $ LLMResponse textContent' toolCalls'
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
@@ -188,12 +188,12 @@ callClaudeNonStream apiKey' model' messages' tools' = do
     extractContent :: [ClaudeContentBlock] -> (Text, Maybe [Types.ToolCall])
     extractContent blocks =
       let texts = [t | ClaudeTextBlock t <- blocks]
-          tools = [ClaudeToolUseBlock tu | ClaudeToolUseBlock tu <- blocks]
-          textContent = T.intercalate "\n" texts
-          toolCalls = if null tools
-                      then Nothing
-                      else Just $ map convertToolUse [tu | ClaudeToolUseBlock tu <- blocks]
-      in (textContent, toolCalls)
+          toolUseBlocks = [tu | ClaudeToolUseBlock tu <- blocks]
+          textContent' = T.intercalate "\n" texts
+          toolCalls' = if null toolUseBlocks
+                       then Nothing
+                       else Just $ map convertToolUse toolUseBlocks
+      in (textContent', toolCalls')
 
     convertToolUse :: ClaudeToolUse -> Types.ToolCall
     convertToolUse tu = Types.ToolCall

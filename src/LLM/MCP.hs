@@ -17,7 +17,7 @@ module LLM.MCP
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.STM
 import Control.Concurrent.Async (race)
-import Control.Exception (try, SomeException, bracket, catch)
+import Control.Exception (try, SomeException, catch)
 import Control.Monad (forever, void)
 import Data.Aeson
 import Data.Aeson.KeyMap (lookup)
@@ -174,7 +174,7 @@ responseHandler client = forever $ do
     line <- BS8.hGetLine (clientStdout client)
     let lazyLine = LBS.fromStrict line
     case eitherDecode lazyLine of
-      Left err -> return ()
+      Left _ -> return ()
       Right response -> do
         case respId response of
           Just msgId -> do
@@ -194,7 +194,7 @@ responseHandler client = forever $ do
                   Nothing -> return () -- Error case
               Nothing -> return ()
           Nothing -> return () -- Notification
-    ) (\(e :: SomeException) -> return ())
+    ) (\(_ :: SomeException) -> return ())
 
 -- | Send a JSON-RPC request and wait for response
 sendRequest :: MCPClient -> Text -> Maybe Value -> IO (Either String Value)
@@ -287,9 +287,9 @@ listTools client = do
 
 -- | Call a tool on the MCP server
 callTool :: MCPClient -> Text -> Value -> IO (Either String Value)
-callTool client toolName args = do
+callTool client toolName' args = do
   let params = object
-        [ "name" .= toolName
+        [ "name" .= toolName'
         , "arguments" .= args
         ]
   sendRequest client "tools/call" (Just params)
