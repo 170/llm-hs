@@ -4,8 +4,9 @@
 module Providers.Ollama (ollamaProvider) where
 
 import Control.Exception (try, SomeException)
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, eitherDecode, encode)
+import qualified Data.Maybe
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Conduit ((.|), runConduit)
@@ -151,12 +152,8 @@ mcpToolsToOllama ctx =
 
 callOllama :: LLMRequest -> IO (Either LLMError LLMResponse)
 callOllama llmReq = do
-  let model' = case Types.model llmReq of
-        Nothing -> "llama3.2"
-        Just m -> m
-      baseUrl' = case Types.baseUrl llmReq of
-        Nothing -> "localhost:11434"
-        Just u -> u
+  let model' = Data.Maybe.fromMaybe "llama3.2" (Types.model llmReq)
+      baseUrl' = Data.Maybe.fromMaybe "localhost:11434" (Types.baseUrl llmReq)
       -- Convert MCP tools to Ollama format
       tools' = case Types.mcpContext llmReq of
         Nothing -> Nothing
@@ -228,8 +225,7 @@ callOllamaChatStream baseUrl' model' messages' tools' = do
         .| CC.linesUnboundedAscii
         .| CL.mapM_ (processChatChunkWithTools firstChunkRef toolCallsRef)
       -- Read collected tool calls
-      collectedToolCalls <- readIORef toolCallsRef
-      return collectedToolCalls
+      readIORef toolCallsRef
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
@@ -241,7 +237,7 @@ processChatChunk firstChunkRef chunk
   | otherwise = case eitherDecode (LBS.fromStrict chunk) of
       Right (chatResp :: OllamaChatResponse) -> do
         let txt = respMsgContent $ chatRespMessage chatResp
-        when (not $ T.null txt) $ do
+        unless (T.null txt) $ do
           isFirst <- readIORef firstChunkRef
           when isFirst $ do
             writeIORef firstChunkRef False
@@ -258,7 +254,7 @@ processChatChunkWithTools firstChunkRef toolCallsRef chunk
         let msg = chatRespMessage chatResp
             txt = respMsgContent msg
         -- Output text content
-        when (not $ T.null txt) $ do
+        unless (T.null txt) $ do
           isFirst <- readIORef firstChunkRef
           when isFirst $ do
             writeIORef firstChunkRef False
@@ -339,7 +335,7 @@ processGenerateChunk firstChunkRef chunk
   | otherwise = case eitherDecode (LBS.fromStrict chunk) of
       Right (genResp :: OllamaGenerateResponse) -> do
         let txt = ollamaResponse genResp
-        when (not $ T.null txt) $ do
+        unless (T.null txt) $ do
           isFirst <- readIORef firstChunkRef
           when isFirst $ do
             writeIORef firstChunkRef False

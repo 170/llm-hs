@@ -1,10 +1,9 @@
-{-# LANGUAGE OverloadedStrings #-}
-
 module App.Pipe
   ( runPipe
   ) where
 
 import qualified Data.Text.IO as TIO
+import qualified Data.Maybe
 import Core.Types (LLMRequest(..), MCPContext)
 import CLI (Options(..))
 import App.Utils (getApiKey, createSystemMessage, callProvider, handleResult)
@@ -25,7 +24,7 @@ runPipe opts mcpCtx = do
         , model = modelName opts
         , apiKey = apiKeyValue
         , baseUrl = baseUrlOpt opts
-        , streaming = maybe False id (streamOpt opts)
+        , streaming = Data.Maybe.fromMaybe False (streamOpt opts)
         , history = [systemMsg]  -- Include system message with current time
         , mcpContext = mcpCtx
         }

@@ -14,6 +14,8 @@ import qualified Data.Aeson
 import qualified Data.Aeson.KeyMap
 import qualified Data.Aeson.Key as Key
 import Data.Foldable (toList)
+import Data.Either (rights, lefts)
+import qualified Data.Maybe
 import System.IO (stderr)
 import Core.Types (MCPContext(..), ColorMode)
 import qualified Core.Types as Types
@@ -26,8 +28,8 @@ import qualified UI.Format as Format
 startMCPServers :: [MCPServer] -> IO [MCPClient]
 startMCPServers servers = do
   results <- mapM startMCPServer servers
-  let clients = [client | Right client <- results]
-  let errors = [err | Left err <- results]
+  let clients = rights results
+  let errors = lefts results
 
   -- Print errors if any
   mapM_ (\err -> TIO.hPutStrLn stderr $ "MCP Error: " <> T.pack err) errors
@@ -50,7 +52,7 @@ buildMCPContext clients = do
       case result of
         Left _ -> return []
         Right tools -> return
-          [ (toolName tool, maybe "" id (toolDescription tool), toolInputSchema tool)
+          [ (toolName tool, Data.Maybe.fromMaybe "" (toolDescription tool), toolInputSchema tool)
           | tool <- tools
           ]
 
@@ -79,7 +81,7 @@ executeToolCall clients colorMode tc = do
   -- Try each client until one succeeds
   results <- mapM (\client -> callTool client (Types.toolName tc) (decodeArgs $ Types.toolArguments tc)) clients
 
-  case [r | Right r <- results] of
+  case rights results of
     (result:_) -> do
       -- Parse the result to extract relevant text
       case result of

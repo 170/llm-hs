@@ -56,9 +56,8 @@ instance FromJSON Config where
     let parsedProvider = provider >>= parseProvider
     color <- v .:? "color"
     let parsedColor = color >>= parseColor
-    Config
-      <$> pure parsedProvider
-      <*> v .:? "model"
+    Config parsedProvider
+      <$> v .:? "model"
       <*> v .:? "openaiApiKey"
       <*> v .:? "claudeApiKey"
       <*> v .:? "geminiApiKey"

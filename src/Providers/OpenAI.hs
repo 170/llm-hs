@@ -4,8 +4,9 @@
 module Providers.OpenAI (openAIProvider) where
 
 import Control.Exception (try, SomeException)
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, eitherDecode)
+import qualified Data.Maybe
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Conduit ((.|), runConduit)
@@ -162,12 +163,8 @@ openAIProvider = LLMProvider
 
 callOpenAI :: LLMRequest -> IO (Either LLMError LLMResponse)
 callOpenAI llmReq = do
-  let apiKey' = case Types.apiKey llmReq of
-        Nothing -> error "OpenAI API key is required"
-        Just k -> k
-      model' = case Types.model llmReq of
-        Nothing -> "gpt-4o-mini"
-        Just m -> m
+  let apiKey' = Data.Maybe.fromMaybe (error "OpenAI API key is required") (Types.apiKey llmReq)
+      model' = Data.Maybe.fromMaybe "gpt-4o-mini" (Types.model llmReq)
       -- Build messages from history + current prompt
       historyMessages = map (\msg -> OpenAIMessage (Types.role msg) (Just $ Types.messageContent msg) Nothing) (Types.history llmReq)
       allMessages = historyMessages ++ [OpenAIMessage "user" (Just $ Types.prompt llmReq) Nothing]
@@ -191,8 +188,7 @@ buildOpenAIRequest apiKey' model' messages' tools' stream' = do
         }
   request' <- parseRequest "POST https://api.openai.com/v1/chat/completions"
   return $ setRequestBodyJSON requestBody
-         $ setRequestHeader "Authorization" ["Bearer " <> TE.encodeUtf8 apiKey']
-         $ request'
+         $ setRequestHeader "Authorization" ["Bearer " <> TE.encodeUtf8 apiKey'] request'
 
 callOpenAINonStream :: Text -> Text -> [OpenAIMessage] -> Maybe [OpenAITool] -> IO (Either LLMError LLMResponse)
 callOpenAINonStream apiKey' model' messages' tools' = do
@@ -207,12 +203,8 @@ callOpenAINonStream apiKey' model' messages' tools' = do
           [] -> return $ Left $ APIError "No response from OpenAI"
           (choice:_) ->
             let msg = message choice
-                content' = case messageContent msg of
-                  Just c -> c
-                  Nothing -> ""
-                toolCalls' = case Providers.OpenAI.toolCalls msg of
-                  Just calls -> Just $ map convertToolCall calls
-                  Nothing -> Nothing
+                content' = Data.Maybe.fromMaybe "" (messageContent msg)
+                toolCalls' = fmap (map convertToolCall) (Providers.OpenAI.toolCalls msg)
             in return $ Right $ LLMResponse content' toolCalls'
 
   case result of
@@ -254,7 +246,7 @@ processChunk firstChunkRef chunk
           (choice:_) -> case deltaContent (delta choice) of
             Just txt -> do
               -- Stop spinner on first chunk with content
-              when (not $ T.null txt) $ do
+              unless (T.null txt) $ do
                 isFirst <- readIORef firstChunkRef
                 when isFirst $ do
                   writeIORef firstChunkRef False

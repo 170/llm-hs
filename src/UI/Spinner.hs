@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
 module UI.Spinner
   ( globalSpinnerThread
@@ -35,7 +36,7 @@ startSpinner = do
 -- Stop the spinner (called from stream processors or after action completes)
 stopSpinner :: IO ()
 stopSpinner = do
-  mTid <- atomicModifyIORef' globalSpinnerThread (\tid -> (Nothing, tid))
+  mTid <- atomicModifyIORef' globalSpinnerThread (Nothing,)
   case mTid of
     Just tid -> do
       killThread tid

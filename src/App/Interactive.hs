@@ -9,7 +9,8 @@ import qualified Data.Text.IO as TIO
 import System.IO (stderr, hFlush, stdout)
 import System.Console.Haskeline
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad (when)
+import Control.Monad (when, unless)
+import qualified Data.Maybe
 import Core.Types (LLMRequest(..), LLMResponse(..), Message(..), ConversationHistory, MCPContext(..), Provider(..), ColorMode(..))
 import CLI (Options(..))
 import Integration.MCP (MCPClient)
@@ -24,7 +25,7 @@ runInteractive opts mcpClients mcpCtx = do
   let prov = case provider opts of
         Just p -> p
         Nothing -> error "Provider must be set"  -- Should never happen after merge
-      colorMode = maybe AutoColor id (colorOpt opts)
+      colorMode = Data.Maybe.fromMaybe AutoColor (colorOpt opts)
 
   -- Print header with colors
   headerText <- Color.infoColor colorMode "=== Interactive Mode ==="
@@ -88,7 +89,7 @@ conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
                 , model = modelName opts
                 , apiKey = apiKey'
                 , baseUrl = baseUrlOpt opts
-                , streaming = maybe False id (streamOpt opts)
+                , streaming = Data.Maybe.fromMaybe False (streamOpt opts)
                 , history = history'  -- Pass conversation history to API
                 , mcpContext = mcpCtx
                 }
@@ -110,7 +111,7 @@ conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
                 Just calls | not (null calls) -> do
                   -- Show assistant's response/thinking if present
                   let assistantMsg = content response
-                  when (not $ T.null assistantMsg) $ do
+                  unless (T.null assistantMsg) $ do
                     assistantText <- liftIO $ Color.assistantColor colorMode assistantMsg
                     liftIO $ TIO.putStrLn assistantText
 
@@ -167,7 +168,7 @@ conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
                   -- No tool calls, normal response
                   let assistantMsg = content response
 
-                  if maybe False id (streamOpt opts)
+                  if Data.Maybe.fromMaybe False (streamOpt opts)
                     then liftIO $ TIO.putStrLn ""  -- Add newline after streaming
                     else do
                       assistantText <- liftIO $ Color.assistantColor colorMode assistantMsg

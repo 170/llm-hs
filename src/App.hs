@@ -1,5 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-
 module App
   ( runLLM
   ) where
@@ -27,7 +25,7 @@ runLLM opts = do
       -- Use bracket to ensure proper cleanup
       bracket
         (startMCPServers servers)
-        (\clients -> mapM_ stopMCPServer clients)
+        (mapM_ stopMCPServer)
         (\clients -> do
           -- Build MCP context
           mcpCtx <- buildMCPContext clients

@@ -4,8 +4,9 @@
 module Providers.Gemini (geminiProvider) where
 
 import Control.Exception (try, SomeException)
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Data.Aeson (FromJSON(..), ToJSON(..), Value(..), Object, object, (.=), (.:), (.:?), withObject, eitherDecode, encode)
+import qualified Data.Maybe
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
@@ -132,12 +133,8 @@ mcpToolsToGemini ctx =
 
 callGemini :: LLMRequest -> IO (Either LLMError LLMResponse)
 callGemini llmReq = do
-  let apiKey' = case Types.apiKey llmReq of
-        Nothing -> error "Gemini API key is required"
-        Just k -> k
-      model' = case Types.model llmReq of
-        Nothing -> "gemini-1.5-flash"
-        Just m -> m
+  let apiKey' = Data.Maybe.fromMaybe (error "Gemini API key is required") (Types.apiKey llmReq)
+      model' = Data.Maybe.fromMaybe "gemini-1.5-flash" (Types.model llmReq)
       -- Build contents from history + current prompt
       historyContents = map (\msg -> GeminiContent [GeminiPart (Just $ Types.messageContent msg) Nothing]) (Types.history llmReq)
       allContents = historyContents ++ [GeminiContent [GeminiPart (Just $ Types.prompt llmReq) Nothing]]
@@ -162,8 +159,7 @@ buildGeminiRequest apiKey' model' contents' tools' stream' = do
             <> T.unpack model' <> endpoint
   request' <- parseRequest url
   return $ setRequestBodyJSON requestBody
-         $ setRequestHeader "x-goog-api-key" [TE.encodeUtf8 apiKey']
-         $ request'
+         $ setRequestHeader "x-goog-api-key" [TE.encodeUtf8 apiKey'] request'
 
 callGeminiNonStream :: Text -> Text -> [GeminiContent] -> Maybe [GeminiTool] -> IO (Either LLMError LLMResponse)
 callGeminiNonStream apiKey' model' contents' tools' = do
@@ -218,8 +214,7 @@ callGeminiStream apiKey' model' contents' tools' = do
         .| CL.mapMaybe extractData
         .| CL.mapM_ (processGeminiChunkWithTools firstChunkRef toolCallsRef)
       -- Read collected tool calls
-      collectedToolCalls <- readIORef toolCallsRef
-      return collectedToolCalls
+      readIORef toolCallsRef
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
@@ -241,7 +236,7 @@ processGeminiChunk firstChunkRef chunk
                 case partText part of
                   Just txt -> do
                     -- Stop spinner on first chunk with content
-                    when (not $ T.null txt) $ do
+                    unless (T.null txt) $ do
                       isFirst <- readIORef firstChunkRef
                       when isFirst $ do
                         writeIORef firstChunkRef False
@@ -268,7 +263,7 @@ processGeminiChunkWithTools firstChunkRef toolCallsRef chunk
                 functionCalls = [fc | GeminiPart _ (Just fc) <- partsList]
             in do
               -- Output text content
-              when (not $ null texts) $ do
+              unless (null texts) $ do
                 let txt = T.concat texts
                 isFirst <- readIORef firstChunkRef
                 when isFirst $ do
@@ -277,7 +272,7 @@ processGeminiChunkWithTools firstChunkRef toolCallsRef chunk
                 TIO.putStr txt
                 hFlush stdout
               -- Collect tool calls
-              when (not $ null functionCalls) $ do
+              unless (null functionCalls) $ do
                 let convertedCalls = zipWith convertFunctionCall [1..] functionCalls
                 writeIORef toolCallsRef (Just convertedCalls)
           [] -> return ()

@@ -9,6 +9,7 @@ module App.Utils
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import qualified Data.Maybe
 import System.Environment (lookupEnv)
 import System.IO (stderr, hFlush, stdout)
 import Data.Time (getCurrentTime, formatTime, defaultTimeLocale)
@@ -76,13 +77,13 @@ callProvider opts request =
 -- | Handle and display the result from an LLM call
 handleResult :: Options -> Either LLMError LLMResponse -> IO ()
 handleResult opts result = do
-  let colorMode = maybe AutoColor id (colorOpt opts)
+  let colorMode = Data.Maybe.fromMaybe AutoColor (colorOpt opts)
   case result of
     Left err -> do
       errorText <- Color.errorColor colorMode $ "Error: " <> T.pack (show err)
       TIO.hPutStrLn stderr errorText
     Right response -> do
-      if maybe False id (streamOpt opts)
+      if Data.Maybe.fromMaybe False (streamOpt opts)
         then TIO.putStrLn ""  -- Add newline after streaming
         else do
           assistantText <- Color.assistantColor colorMode $ content response

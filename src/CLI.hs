@@ -8,6 +8,7 @@ module CLI
 
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Maybe
 import Options.Applicative
 import Core.Types (Provider(..), ColorMode(..))
 import Config (Config(..))
@@ -94,8 +95,8 @@ mergeConfigWithOptions Nothing opts =
   case provider opts of
     Nothing -> Left "No provider specified. Please specify via --provider or in ~/.llm-hs.json"
     Just _ -> Right $ opts
-      { streamOpt = Just (maybe False id (streamOpt opts))
-      , colorOpt = Just (maybe AutoColor id (colorOpt opts))
+      { streamOpt = Just (Data.Maybe.fromMaybe False (streamOpt opts))
+      , colorOpt = Just (Data.Maybe.fromMaybe AutoColor (colorOpt opts))
       }
 mergeConfigWithOptions (Just config) opts =
   let mergedProvider = case provider opts of
@@ -129,6 +130,6 @@ mergeConfigWithOptions (Just config) opts =
          , modelName = mergedModel
          , apiKeyOpt = mergedApiKey
          , baseUrlOpt = mergedBaseUrl
-         , streamOpt = Just (maybe False id mergedStream)
-         , colorOpt = Just (maybe AutoColor id mergedColor)
+         , streamOpt = Just (Data.Maybe.fromMaybe False mergedStream)
+         , colorOpt = Just (Data.Maybe.fromMaybe AutoColor mergedColor)
          }

@@ -4,8 +4,9 @@
 module Providers.Claude (claudeProvider) where
 
 import Control.Exception (try, SomeException)
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, eitherDecode, encode)
+import qualified Data.Maybe
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Conduit ((.|), runConduit)
@@ -133,12 +134,8 @@ mcpToolsToClaude ctx =
 
 callClaude :: LLMRequest -> IO (Either LLMError LLMResponse)
 callClaude llmReq = do
-  let apiKey' = case Types.apiKey llmReq of
-        Nothing -> error "Claude API key is required"
-        Just k -> k
-      model' = case Types.model llmReq of
-        Nothing -> "claude-3-5-sonnet-20241022"
-        Just m -> m
+  let apiKey' = Data.Maybe.fromMaybe (error "Claude API key is required") (Types.apiKey llmReq)
+      model' = Data.Maybe.fromMaybe "claude-3-5-sonnet-20241022" (Types.model llmReq)
       -- Extract system messages and convert to system prompt
       (systemPrompt', userMessages) = extractSystemMessages (Types.history llmReq)
       -- Build messages from non-system history + current prompt
@@ -178,8 +175,7 @@ buildClaudeRequest apiKey' model' messages' systemPrompt' tools' stream' = do
   return $ setRequestBodyJSON requestBody
          $ setRequestHeader "x-api-key" [TE.encodeUtf8 apiKey']
          $ setRequestHeader "anthropic-version" ["2023-06-01"]
-         $ setRequestHeader "content-type" ["application/json"]
-         $ request'
+         $ setRequestHeader "content-type" ["application/json"] request'
 
 callClaudeNonStream :: Text -> Text -> [ClaudeMessage] -> Maybe Text -> Maybe [ClaudeTool] -> IO (Either LLMError LLMResponse)
 callClaudeNonStream apiKey' model' messages' systemPrompt' tools' = do
@@ -256,7 +252,7 @@ processClaudeChunk firstChunkRef chunk
                 case deltaText delta of
                   Just txt -> do
                     -- Stop spinner on first chunk with content
-                    when (not $ T.null txt) $ do
+                    unless (T.null txt) $ do
                       isFirst <- readIORef firstChunkRef
                       when isFirst $ do
                         writeIORef firstChunkRef False
