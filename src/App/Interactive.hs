@@ -66,7 +66,7 @@ runInteractive opts mcpClients mcpCtx = do
   apiKeyValue <- getApiKey opts
 
   -- Create initial system message with current time
-  systemMsg <- createSystemMessage
+  systemMsg <- createSystemMessage (systemPrompt opts)
 
   -- Check if color should be used for input
   useColor <- Color.shouldUseColor colorMode

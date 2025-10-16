@@ -96,6 +96,7 @@ Exit the interactive mode by typing `exit`, `quit`, `:q`, or pressing `Ctrl-D`.
 - `-u, --base-url BASE_URL` - Base URL for the provider (mainly for Ollama, default: localhost:11434)
 - `-s, --stream` - Enable streaming output (real-time response)
 - `-c, --color MODE` - Color mode (auto, always, never) - default: auto
+- `--system PROMPT` - Custom system prompt
 
 ### Environment Variables
 
@@ -137,6 +138,10 @@ echo "What is functional programming?" | llm-hs -p gemini --stream
 echo "Hello, world!" | llm-hs -p openai --color always  # Force color output
 echo "Hello, world!" | llm-hs -p claude --color never   # Disable color output
 llm-hs -p openai --color auto  # Auto-detect terminal color support (default)
+
+# Custom system prompt
+echo "What is 2+2?" | llm-hs -p openai --system "You are a helpful math tutor."
+llm-hs -p claude --system "You are an expert Haskell programmer. Answer concisely."
 ```
 
 ### Streaming Support

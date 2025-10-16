@@ -17,7 +17,7 @@ runPipe opts mcpCtx = do
   apiKeyValue <- getApiKey opts
 
   -- Create system message with current time
-  systemMsg <- createSystemMessage
+  systemMsg <- createSystemMessage (systemPrompt opts)
 
   let request = LLMRequest
         { prompt = input

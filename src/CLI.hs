@@ -20,6 +20,7 @@ data Options = Options
   , baseUrlOpt :: Maybe Text
   , streamOpt :: Maybe Bool
   , colorOpt :: Maybe ColorMode
+  , systemPrompt :: Maybe Text
   } deriving (Show)
 
 providerParser :: Parser (Maybe Provider)
@@ -78,6 +79,11 @@ optionsParser = Options
       <> help "Enable streaming output (real-time)"
       ))
   <*> colorModeParser
+  <*> optional (option (T.pack <$> str)
+      (  long "system"
+      <> metavar "PROMPT"
+      <> help "Custom system prompt"
+      ))
 
 parseOptions :: IO Options
 parseOptions = execParser opts
@@ -97,6 +103,7 @@ mergeConfigWithOptions Nothing opts =
     Just _ -> Right $ opts
       { streamOpt = Just (Data.Maybe.fromMaybe False (streamOpt opts))
       , colorOpt = Just (Data.Maybe.fromMaybe AutoColor (colorOpt opts))
+      , systemPrompt = systemPrompt opts
       }
 mergeConfigWithOptions (Just config) opts =
   let mergedProvider = case provider opts of
@@ -132,4 +139,5 @@ mergeConfigWithOptions (Just config) opts =
          , baseUrlOpt = mergedBaseUrl
          , streamOpt = Just (Data.Maybe.fromMaybe False mergedStream)
          , colorOpt = Just (Data.Maybe.fromMaybe AutoColor mergedColor)
+         , systemPrompt = systemPrompt opts
          }

@@ -38,15 +38,15 @@ getApiKey opts = case apiKeyOpt opts of
     return $ T.pack <$> envKey
 
 -- | Create system message with current date and time
-createSystemMessage :: IO Message
-createSystemMessage = do
+createSystemMessage :: Maybe T.Text -> IO Message
+createSystemMessage customPrompt = do
   now <- getCurrentTime
   tz <- getCurrentTimeZone
   let localTime = utcToLocalTime tz now
       dateTimeStr = formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S %Z" localTime
       dateStr = formatTime defaultTimeLocale "%Y-%m-%d" localTime
       dayOfWeek = formatTime defaultTimeLocale "%A" localTime
-      systemContent = T.unlines
+      defaultContent = T.unlines
         [ "Current date and time: " <> T.pack dateTimeStr
         , "Today's date: " <> T.pack dateStr <> " (" <> T.pack dayOfWeek <> ")"
         , ""
@@ -55,6 +55,9 @@ createSystemMessage = do
         , "- Use this current date to calculate other relative dates"
         , "- When searching for news or events, use the specific date in your queries"
         ]
+      systemContent = case customPrompt of
+        Nothing -> defaultContent
+        Just custom -> custom <> "\n\n" <> defaultContent
   return $ Message "system" systemContent
 
 -- | Get provider instance based on provider type
