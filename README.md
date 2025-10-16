@@ -173,8 +173,8 @@ The tool supports colored output with three modes:
 
 Color scheme:
 - **System messages** (cyan): Informational messages and instructions
-- **User messages** (green): Your input messages (in conversation history)
-- **Assistant messages** (blue): LLM responses
+- **User input prompt** (green): The input prompt in interactive mode
+- **Assistant messages** (no color): LLM responses are displayed without color for better readability
 - **Error messages** (red): Error and warning messages
 - **Info messages** (yellow): Headers and status information
 - **Tool messages** (magenta): MCP tool execution details

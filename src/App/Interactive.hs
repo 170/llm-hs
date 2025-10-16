@@ -8,8 +8,9 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import System.IO (stderr, hFlush, stdout)
 import System.Console.Haskeline
+import System.Console.ANSI (SGR(..), Color(..), ColorIntensity(..), ConsoleLayer(..), setSGRCode)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad (when, unless)
+import Control.Monad (unless, when)
 import qualified Data.Maybe
 import Core.Types (LLMRequest(..), LLMResponse(..), Message(..), ConversationHistory, MCPContext(..), Provider(..), ColorMode(..))
 import CLI (Options(..))
@@ -67,13 +68,26 @@ runInteractive opts mcpClients mcpCtx = do
   -- Create initial system message with current time
   systemMsg <- createSystemMessage
 
-  -- Start conversation loop with haskeline
-  runInputT defaultSettings $ conversationLoop opts apiKeyValue mcpClients mcpCtx colorMode [systemMsg]
+  -- Check if color should be used for input
+  useColor <- Color.shouldUseColor colorMode
 
-conversationLoop :: Options -> Maybe T.Text -> [MCPClient] -> Maybe MCPContext -> ColorMode -> ConversationHistory -> InputT IO ()
-conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
+  -- Start conversation loop with haskeline
+  runInputT defaultSettings $ conversationLoop opts apiKeyValue mcpClients mcpCtx colorMode useColor [systemMsg]
+
+conversationLoop :: Options -> Maybe T.Text -> [MCPClient] -> Maybe MCPContext -> ColorMode -> Bool -> ConversationHistory -> InputT IO ()
+conversationLoop opts apiKey' mcpClients mcpCtx colorMode useColor history' = do
+  -- Create colored prompt with ANSI codes for both prompt and input text
+  let greenColor = setSGRCode [SetColor Foreground Vivid Green]
+      resetColor = setSGRCode [Reset]
+      coloredPrompt = if useColor
+                      then greenColor ++ "> " ++ resetColor ++ greenColor
+                      else "> "
+
   -- Read user input with line editing support
-  minput <- getInputLine "> "
+  minput <- getInputLine coloredPrompt
+
+  -- Reset color after input
+  when useColor $ liftIO $ putStr resetColor
 
   case minput of
     Nothing -> outputStrLn "Goodbye!"  -- EOF (Ctrl-D)
@@ -104,16 +118,15 @@ conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
             Left err -> do
               errorText <- liftIO $ Color.errorColor colorMode $ "Error: " <> T.pack (show err)
               liftIO $ TIO.hPutStrLn stderr errorText
-              conversationLoop opts apiKey' mcpClients mcpCtx colorMode history'
+              conversationLoop opts apiKey' mcpClients mcpCtx colorMode useColor history'
             Right response -> do
               -- Check if there are tool calls
               case Types.toolCalls response of
                 Just calls | not (null calls) -> do
                   -- Show assistant's response/thinking if present
                   let assistantMsg = content response
-                  unless (T.null assistantMsg) $ do
-                    assistantText <- liftIO $ Color.assistantColor colorMode assistantMsg
-                    liftIO $ TIO.putStrLn assistantText
+                  unless (T.null assistantMsg) $
+                    liftIO $ TIO.putStrLn assistantMsg
 
                   -- Execute tool calls
                   liftIO $ TIO.putStrLn ""
@@ -150,7 +163,7 @@ conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
                     Left err -> do
                       errorText <- liftIO $ Color.errorColor colorMode $ "Error: " <> T.pack (show err)
                       liftIO $ TIO.hPutStrLn stderr errorText
-                      conversationLoop opts apiKey' mcpClients mcpCtx colorMode updatedHistory
+                      conversationLoop opts apiKey' mcpClients mcpCtx colorMode useColor updatedHistory
                     Right response' -> do
                       -- Streaming mode outputs directly, so content will be empty
                       -- Just add newline and continue
@@ -162,7 +175,7 @@ conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
                           finalHistory = if T.null assistantContent
                                         then updatedHistory ++ [Message "assistant" "[Response from tool results]"]
                                         else updatedHistory ++ [Message "assistant" assistantContent]
-                      conversationLoop opts apiKey' mcpClients mcpCtx colorMode finalHistory
+                      conversationLoop opts apiKey' mcpClients mcpCtx colorMode useColor finalHistory
 
                 _ -> do
                   -- No tool calls, normal response
@@ -170,9 +183,7 @@ conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
 
                   if Data.Maybe.fromMaybe False (streamOpt opts)
                     then liftIO $ TIO.putStrLn ""  -- Add newline after streaming
-                    else do
-                      assistantText <- liftIO $ Color.assistantColor colorMode assistantMsg
-                      liftIO $ TIO.putStrLn assistantText
+                    else liftIO $ TIO.putStrLn assistantMsg
 
                   liftIO $ hFlush stdout
                   liftIO $ TIO.putStrLn ""
@@ -185,4 +196,4 @@ conversationLoop opts apiKey' mcpClients mcpCtx colorMode history' = do
                       updatedHistory = history' ++ [Message "user" userInput, Message "assistant" assistantContent]
 
                   -- Continue conversation
-                  conversationLoop opts apiKey' mcpClients mcpCtx colorMode updatedHistory
+                  conversationLoop opts apiKey' mcpClients mcpCtx colorMode useColor updatedHistory
