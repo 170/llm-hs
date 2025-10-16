@@ -18,13 +18,14 @@ import System.Environment (lookupEnv)
 import System.IO (stderr, hFlush, stdout, stdin, hIsTerminalDevice)
 import System.Console.Haskeline
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad (when)
 import Control.Exception (bracket)
 import qualified LLM.Types as Types
-import LLM.Types (LLMRequest(..), LLMResponse(..), LLMError(..), Message(..), ConversationHistory, MCPContext(..), Provider(..), ColorMode(..))
-import LLM.OpenAI (callOpenAI)
-import LLM.Claude (callClaude)
-import LLM.Ollama (callOllama)
-import LLM.Gemini (callGemini)
+import LLM.Types (LLMRequest(..), LLMResponse(..), LLMError(..), Message(..), ConversationHistory, MCPContext(..), Provider(..), ColorMode(..), LLMProvider(..))
+import LLM.OpenAI (openAIProvider)
+import LLM.Claude (claudeProvider)
+import LLM.Ollama (ollamaProvider)
+import LLM.Gemini (geminiProvider)
 import LLM.CLI (Options(..))
 import LLM.Spinner (startSpinner, stopSpinner)
 import LLM.Config (loadConfig, MCPServer, Config(..))
@@ -222,6 +223,12 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
               -- Check if there are tool calls
               case Types.toolCalls response of
                 Just calls | not (null calls) -> do
+                  -- Show assistant's response/thinking if present
+                  let assistantMsg = content response
+                  when (not $ T.null assistantMsg) $ do
+                    assistantText <- liftIO $ Color.assistantColor colorMode assistantMsg
+                    liftIO $ TIO.putStrLn assistantText
+
                   -- Execute tool calls
                   liftIO $ TIO.putStrLn ""
                   toolResults <- liftIO $ mapM (executeToolCall mcpClients colorMode) calls
@@ -237,14 +244,16 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
                   let updatedHistory = history ++ [Message "user" userInput]
 
                   -- Make another API call with tool results
+                  -- Don't include mcpContext to avoid sending tool definitions again
+                  -- Force streaming for better responsiveness
                   let request' = LLMRequest
                         { prompt = "Based on the tool results:\n" <> toolResultText
                         , model = modelName opts
                         , apiKey = apiKey
                         , baseUrl = baseUrlOpt opts
-                        , streaming = maybe False id (streamOpt opts)
+                        , streaming = True
                         , history = updatedHistory
-                        , mcpContext = mcpCtx
+                        , mcpContext = Nothing
                         }
 
                   liftIO startSpinner
@@ -257,13 +266,12 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
                       liftIO $ TIO.hPutStrLn stderr errorText
                       conversationLoop opts apiKey mcpClients mcpCtx colorMode updatedHistory
                     Right response' -> do
-                      let finalMsg = content response'
-                      assistantText <- liftIO $ Color.assistantColor colorMode finalMsg
-                      liftIO $ TIO.putStrLn assistantText
-                      liftIO $ hFlush stdout
+                      -- Streaming mode outputs directly, so content will be empty
+                      -- Just add newline and continue
                       liftIO $ TIO.putStrLn ""
 
-                      let finalHistory = updatedHistory ++ [Message "assistant" finalMsg]
+                      -- For history, we'll use a placeholder since streaming already output
+                      let finalHistory = updatedHistory ++ [Message "assistant" (content response')]
                       conversationLoop opts apiKey mcpClients mcpCtx colorMode finalHistory
 
                 _ -> do
@@ -350,16 +358,21 @@ getApiKey opts = case apiKeyOpt opts of
       Gemini -> lookupEnv "GEMINI_API_KEY"
     return $ T.pack <$> envKey
 
+-- | Get provider instance based on provider type
+getProvider :: Provider -> LLMProvider
+getProvider prov = case prov of
+  OpenAI -> openAIProvider
+  Claude -> claudeProvider
+  Ollama -> ollamaProvider
+  Gemini -> geminiProvider
+
 callProvider :: Options -> LLMRequest -> IO (Either LLMError LLMResponse)
 callProvider opts request =
   let prov = case provider opts of
         Just p -> p
         Nothing -> error "Provider must be set"
-  in case prov of
-    OpenAI -> callOpenAI request
-    Claude -> callClaude request
-    Ollama -> callOllama request
-    Gemini -> callGemini request
+      providerInstance = getProvider prov
+  in callLLM providerInstance request
 
 handleResult :: Options -> Either LLMError LLMResponse -> IO ()
 handleResult opts result = do

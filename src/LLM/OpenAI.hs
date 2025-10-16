@@ -1,28 +1,26 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module LLM.OpenAI (callOpenAI) where
+module LLM.OpenAI (openAIProvider) where
 
 import Control.Exception (try, SomeException)
 import Control.Monad (when)
-import Control.Monad.IO.Class (liftIO)
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, decode)
+import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, eitherDecode)
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as LBS
-import Data.Conduit ((.|), runConduit, ConduitT, await, yield)
+import Data.Conduit ((.|), runConduit)
 import qualified Data.Conduit.Combinators as CC
 import qualified Data.Conduit.List as CL
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
-import System.IO (hFlush, stdout, stderr)
+import System.IO (hFlush, stdout)
 import Network.HTTP.Simple
 import Network.HTTP.Conduit (responseBody)
 import qualified LLM.Types as Types
-import LLM.Types (LLMRequest, LLMResponse(..), LLMError(..))
+import LLM.Types (LLMRequest, LLMResponse(..), LLMError(..), LLMProvider(..))
 import LLM.Spinner (stopSpinner)
 
 data OpenAIToolCall = OpenAIToolCall
@@ -156,6 +154,12 @@ mcpToolsToOpenAI ctx =
   | (name, desc, schema) <- Types.mcpTools ctx
   ]
 
+-- | Create OpenAI provider
+openAIProvider :: LLMProvider
+openAIProvider = LLMProvider
+  { callLLM = callOpenAI
+  }
+
 callOpenAI :: LLMRequest -> IO (Either LLMError LLMResponse)
 callOpenAI llmReq = do
   let apiKey' = case Types.apiKey llmReq of
@@ -176,38 +180,44 @@ callOpenAI llmReq = do
     then callOpenAIStream apiKey' model' allMessages tools'
     else callOpenAINonStream apiKey' model' allMessages tools'
 
+-- | Build OpenAI request
+buildOpenAIRequest :: Text -> Text -> [OpenAIMessage] -> Maybe [OpenAITool] -> Bool -> IO Request
+buildOpenAIRequest apiKey' model' messages' tools' stream' = do
+  let requestBody = OpenAIRequest
+        { requestModel = model'
+        , messages = messages'
+        , requestStream = stream'
+        , tools = tools'
+        }
+  request' <- parseRequest "POST https://api.openai.com/v1/chat/completions"
+  return $ setRequestBodyJSON requestBody
+         $ setRequestHeader "Authorization" ["Bearer " <> TE.encodeUtf8 apiKey']
+         $ request'
+
 callOpenAINonStream :: Text -> Text -> [OpenAIMessage] -> Maybe [OpenAITool] -> IO (Either LLMError LLMResponse)
 callOpenAINonStream apiKey' model' messages' tools' = do
   result <- try $ do
-    let requestBody = OpenAIRequest
-          { requestModel = model'
-          , messages = messages'
-          , requestStream = False
-          , tools = tools'
-          }
-
-    request' <- parseRequest "POST https://api.openai.com/v1/chat/completions"
-    let request = setRequestBodyJSON requestBody
-                $ setRequestHeader "Authorization" ["Bearer " <> TE.encodeUtf8 apiKey']
-                $ request'
-
-    response <- httpJSON request
-    return $ getResponseBody response :: IO OpenAIResponse
+    request <- buildOpenAIRequest apiKey' model' messages' tools' False
+    response <- httpLBS request
+    let body = getResponseBody response
+    case eitherDecode body of
+      Left err -> return $ Left $ ParseError err
+      Right openAIResp ->
+        case choices openAIResp of
+          [] -> return $ Left $ APIError "No response from OpenAI"
+          (choice:_) ->
+            let msg = message choice
+                content' = case messageContent msg of
+                  Just c -> c
+                  Nothing -> ""
+                toolCalls' = case LLM.OpenAI.toolCalls msg of
+                  Just calls -> Just $ map convertToolCall calls
+                  Nothing -> Nothing
+            in return $ Right $ LLMResponse content' toolCalls'
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
-    Right openAIResp ->
-      case choices openAIResp of
-        [] -> return $ Left $ APIError "No response from OpenAI"
-        (choice:_) ->
-          let msg = message choice
-              content' = case messageContent msg of
-                Just c -> c
-                Nothing -> ""
-              toolCalls' = case LLM.OpenAI.toolCalls msg of
-                Just calls -> Just $ map convertToolCall calls
-                Nothing -> Nothing
-          in return $ Right $ LLMResponse content' toolCalls'
+    Right res -> return res
   where
     convertToolCall tc = Types.ToolCall
       (toolCallId tc)
@@ -217,29 +227,18 @@ callOpenAINonStream apiKey' model' messages' tools' = do
 callOpenAIStream :: Text -> Text -> [OpenAIMessage] -> Maybe [OpenAITool] -> IO (Either LLMError LLMResponse)
 callOpenAIStream apiKey' model' messages' tools' = do
   result <- try $ do
-    let requestBody = OpenAIRequest
-          { requestModel = model'
-          , messages = messages'
-          , requestStream = True
-          , tools = tools'
-          }
-
-    request' <- parseRequest "POST https://api.openai.com/v1/chat/completions"
-    let request = setRequestBodyJSON requestBody
-                $ setRequestHeader "Authorization" ["Bearer " <> TE.encodeUtf8 apiKey']
-                $ request'
-
+    request <- buildOpenAIRequest apiKey' model' messages' tools' True
     withResponse request $ \response -> do
       firstChunkRef <- newIORef True
-      runConduit $ responseBody response .| CC.linesUnboundedAscii .| parseSSE .| CL.mapM_ (processChunk firstChunkRef)
+      runConduit $ responseBody response
+        .| CC.linesUnboundedAscii
+        .| CL.mapMaybe extractData
+        .| CL.mapM_ (processChunk firstChunkRef)
       return ()
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
     Right () -> return $ Right $ LLMResponse "" Nothing
-
-parseSSE :: Monad m => ConduitT BS.ByteString BS.ByteString m ()
-parseSSE = CL.mapMaybe extractData
   where
     extractData line
       | "data: " `BS.isPrefixOf` line = Just $ BS.drop 6 line
@@ -249,8 +248,8 @@ processChunk :: IORef Bool -> BS.ByteString -> IO ()
 processChunk firstChunkRef chunk
   | chunk == "[DONE]" = return ()
   | BS.null chunk = return ()
-  | otherwise = case decode (LBS.fromStrict chunk) of
-      Just (streamResp :: OpenAIStreamResponse) ->
+  | otherwise = case eitherDecode (LBS.fromStrict chunk) of
+      Right (streamResp :: OpenAIStreamResponse) ->
         case streamChoices streamResp of
           (choice:_) -> case deltaContent (delta choice) of
             Just txt -> do
@@ -265,4 +264,4 @@ processChunk firstChunkRef chunk
               hFlush stdout
             Nothing -> return ()
           [] -> return ()
-      Nothing -> return ()  -- Silently ignore parse errors
+      Left _ -> return ()  -- Silently ignore parse errors

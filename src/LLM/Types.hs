@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 
 module LLM.Types
   ( Provider(..)
@@ -11,6 +12,7 @@ module LLM.Types
   , MCPContext(..)
   , ToolCall(..)
   , ColorMode(..)
+  , LLMProvider(..)
   ) where
 
 import Data.Aeson (Value)
@@ -78,3 +80,8 @@ data MCPContext = MCPContext
   { mcpTools :: [(Text, Text, Value)]  -- (name, description, schema)
   , mcpResources :: [(Text, Text)]     -- (uri, description)
   } deriving (Show, Eq, Generic)
+
+-- | LLM Provider interface for dependency injection
+data LLMProvider = LLMProvider
+  { callLLM :: LLMRequest -> IO (Either LLMError LLMResponse)
+  }
