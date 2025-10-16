@@ -81,6 +81,6 @@ data MCPContext = MCPContext
   } deriving (Show, Eq, Generic)
 
 -- | LLM Provider interface for dependency injection
-data LLMProvider = LLMProvider
+newtype LLMProvider = LLMProvider
   { callLLM :: LLMRequest -> IO (Either LLMError LLMResponse)
   }

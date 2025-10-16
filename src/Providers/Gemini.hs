@@ -5,7 +5,7 @@ module Providers.Gemini (geminiProvider) where
 
 import Control.Exception (try, SomeException)
 import Control.Monad (unless, when)
-import Data.Aeson (FromJSON(..), ToJSON(..), Value(..), Object, object, (.=), (.:), (.:?), withObject, eitherDecode, encode)
+import Data.Aeson (FromJSON(..), ToJSON(..), Value(..), object, (.=), (.:), (.:?), withObject, eitherDecode, encode)
 import qualified Data.Maybe
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
@@ -26,7 +26,7 @@ import Core.Types (LLMRequest, LLMResponse(..), LLMError(..), LLMProvider(..))
 import UI.Spinner (stopSpinner)
 
 -- Tool types
-data GeminiTool = GeminiTool
+newtype GeminiTool = GeminiTool
   { toolFunctionDeclarations :: [GeminiFunctionDeclaration]
   } deriving (Show)
 
@@ -73,7 +73,7 @@ instance FromJSON GeminiPart where
   parseJSON = withObject "GeminiPart" $ \v ->
     GeminiPart <$> v .:? "text" <*> v .:? "functionCall"
 
-data GeminiContent = GeminiContent
+newtype GeminiContent = GeminiContent
   { parts :: [GeminiPart]
   } deriving (Show)
 
@@ -93,7 +93,7 @@ instance ToJSON GeminiRequest where
   toJSON (GeminiRequest c Nothing) = object ["contents" .= c]
   toJSON (GeminiRequest c (Just t)) = object ["contents" .= c, "tools" .= t]
 
-data GeminiCandidate = GeminiCandidate
+newtype GeminiCandidate = GeminiCandidate
   { candidateContent :: GeminiContent
   } deriving (Show)
 
@@ -101,7 +101,7 @@ instance FromJSON GeminiCandidate where
   parseJSON = withObject "GeminiCandidate" $ \v ->
     GeminiCandidate <$> v .: "content"
 
-data GeminiResponse = GeminiResponse
+newtype GeminiResponse = GeminiResponse
   { candidates :: [GeminiCandidate]
   } deriving (Show)
 
@@ -223,31 +223,6 @@ callGeminiStream apiKey' model' contents' tools' = do
     extractData line
       | "data: " `BS.isPrefixOf` line = Just $ BS.drop 6 line
       | otherwise = Nothing
-
-processGeminiChunk :: IORef Bool -> BS.ByteString -> IO ()
-processGeminiChunk firstChunkRef chunk
-  | BS.null chunk = return ()
-  | otherwise = case eitherDecode (LBS.fromStrict chunk) of
-      Right (geminiResp :: GeminiResponse) ->
-        case candidates geminiResp of
-          (candidate:_) ->
-            case parts (candidateContent candidate) of
-              (part:_) ->
-                case partText part of
-                  Just txt -> do
-                    -- Stop spinner on first chunk with content
-                    unless (T.null txt) $ do
-                      isFirst <- readIORef firstChunkRef
-                      when isFirst $ do
-                        writeIORef firstChunkRef False
-                        stopSpinner
-                    -- Output the content immediately
-                    TIO.putStr txt
-                    hFlush stdout
-                  Nothing -> return ()
-              [] -> return ()
-          [] -> return ()
-      Left _ -> return ()
 
 processGeminiChunkWithTools :: IORef Bool -> IORef (Maybe [Types.ToolCall]) -> BS.ByteString -> IO ()
 processGeminiChunkWithTools firstChunkRef toolCallsRef chunk

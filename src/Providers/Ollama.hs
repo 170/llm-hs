@@ -44,7 +44,7 @@ instance ToJSON OllamaFunction where
   toJSON (OllamaFunction n d p) =
     object ["name" .= n, "description" .= d, "parameters" .= p]
 
-data OllamaToolCall = OllamaToolCall
+newtype OllamaToolCall = OllamaToolCall
   { ollamaToolCallFunction :: OllamaToolCallFunction
   } deriving (Show)
 
@@ -121,7 +121,7 @@ instance FromJSON OllamaChatResponseMessage where
       <*> v .:? "thinking"
       <*> v .:? "tool_calls"
 
-data OllamaChatResponse = OllamaChatResponse
+newtype OllamaChatResponse = OllamaChatResponse
   { chatRespMessage :: OllamaChatResponseMessage
   } deriving (Show)
 
@@ -129,7 +129,7 @@ instance FromJSON OllamaChatResponse where
   parseJSON = withObject "OllamaChatResponse" $ \v ->
     OllamaChatResponse <$> v .: "message"
 
-data OllamaGenerateResponse = OllamaGenerateResponse
+newtype OllamaGenerateResponse = OllamaGenerateResponse
   { ollamaResponse :: Text
   } deriving (Show)
 
@@ -230,21 +230,6 @@ callOllamaChatStream baseUrl' model' messages' tools' = do
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
     Right toolCalls' -> return $ Right $ LLMResponse "" toolCalls'
-
-processChatChunk :: IORef Bool -> BS.ByteString -> IO ()
-processChatChunk firstChunkRef chunk
-  | BS.null chunk = return ()
-  | otherwise = case eitherDecode (LBS.fromStrict chunk) of
-      Right (chatResp :: OllamaChatResponse) -> do
-        let txt = respMsgContent $ chatRespMessage chatResp
-        unless (T.null txt) $ do
-          isFirst <- readIORef firstChunkRef
-          when isFirst $ do
-            writeIORef firstChunkRef False
-            stopSpinner
-        TIO.putStr txt
-        hFlush stdout
-      Left _ -> return ()
 
 processChatChunkWithTools :: IORef Bool -> IORef (Maybe [Types.ToolCall]) -> BS.ByteString -> IO ()
 processChatChunkWithTools firstChunkRef toolCallsRef chunk

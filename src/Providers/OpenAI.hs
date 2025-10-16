@@ -107,7 +107,7 @@ instance ToJSON OpenAIRequest where
   toJSON (OpenAIRequest m msgs s (Just ts)) =
     object ["model" .= m, "messages" .= msgs, "stream" .= s, "tools" .= ts]
 
-data OpenAIChoice = OpenAIChoice
+newtype OpenAIChoice = OpenAIChoice
   { message :: OpenAIMessage
   } deriving (Show)
 
@@ -115,7 +115,7 @@ instance FromJSON OpenAIChoice where
   parseJSON = withObject "OpenAIChoice" $ \v ->
     OpenAIChoice <$> v .: "message"
 
-data OpenAIResponse = OpenAIResponse
+newtype OpenAIResponse = OpenAIResponse
   { choices :: [OpenAIChoice]
   } deriving (Show)
 
@@ -124,7 +124,7 @@ instance FromJSON OpenAIResponse where
     OpenAIResponse <$> v .: "choices"
 
 -- Streaming types
-data OpenAIDelta = OpenAIDelta
+newtype OpenAIDelta = OpenAIDelta
   { deltaContent :: Maybe Text
   } deriving (Show)
 
@@ -132,7 +132,7 @@ instance FromJSON OpenAIDelta where
   parseJSON = withObject "OpenAIDelta" $ \v ->
     OpenAIDelta <$> v .:? "content"
 
-data OpenAIStreamChoice = OpenAIStreamChoice
+newtype OpenAIStreamChoice = OpenAIStreamChoice
   { delta :: OpenAIDelta
   } deriving (Show)
 
@@ -140,7 +140,7 @@ instance FromJSON OpenAIStreamChoice where
   parseJSON = withObject "OpenAIStreamChoice" $ \v ->
     OpenAIStreamChoice <$> v .: "delta"
 
-data OpenAIStreamResponse = OpenAIStreamResponse
+newtype OpenAIStreamResponse = OpenAIStreamResponse
   { streamChoices :: [OpenAIStreamChoice]
   } deriving (Show)
 

@@ -92,7 +92,7 @@ instance FromJSON ClaudeContentBlock where
         return $ ClaudeToolUseBlock (ClaudeToolUse tId tName tInput)
       _ -> fail $ "Unknown content block type: " ++ T.unpack blockType
 
-data ClaudeResponse = ClaudeResponse
+newtype ClaudeResponse = ClaudeResponse
   { responseContent :: [ClaudeContentBlock]
   } deriving (Show)
 
