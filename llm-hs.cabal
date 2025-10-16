@@ -26,6 +26,10 @@ source-repository head
 library
   exposed-modules:
       App
+      App.Interactive
+      App.MCPHandler
+      App.Pipe
+      App.Utils
       CLI
       Config
       Core.Types
