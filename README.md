@@ -11,6 +11,7 @@ A CLI tool for calling various LLM APIs (OpenAI, Claude, Ollama, Gemini) from th
   - Google Gemini (Gemini 1.5 Flash, etc.) - **Streaming ✅**
 - **Real-time streaming output** for all providers
 - **Interactive mode** for multi-turn conversations (REPL)
+- **MCP (Model Context Protocol) support** for connecting to external tools and resources
 - Pipe mode for single-shot queries
 - Automatic conversation history management in interactive mode
 - Configurable via command-line arguments, environment variables, or configuration file
