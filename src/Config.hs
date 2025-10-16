@@ -41,7 +41,9 @@ instance ToJSON MCPServer where
 data Config = Config
   { defaultProvider :: Maybe Provider
   , defaultModel :: Maybe Text
-  , defaultApiKey :: Maybe Text
+  , openaiApiKey :: Maybe Text
+  , claudeApiKey :: Maybe Text
+  , geminiApiKey :: Maybe Text
   , defaultBaseUrl :: Maybe Text
   , defaultStream :: Maybe Bool
   , defaultColor :: Maybe ColorMode
@@ -57,7 +59,9 @@ instance FromJSON Config where
     Config
       <$> pure parsedProvider
       <*> v .:? "model"
-      <*> v .:? "apiKey"
+      <*> v .:? "openaiApiKey"
+      <*> v .:? "claudeApiKey"
+      <*> v .:? "geminiApiKey"
       <*> v .:? "baseUrl"
       <*> v .:? "stream"
       <*> pure parsedColor
@@ -77,11 +81,13 @@ instance FromJSON Config where
       parseColor _ = Nothing
 
 instance ToJSON Config where
-  toJSON (Config prov model key baseUrl stream color servers) =
+  toJSON (Config prov model openaiKey claudeKey geminiKey baseUrl stream color servers) =
     object
       [ "provider" .= fmap providerToText prov
       , "model" .= model
-      , "apiKey" .= key
+      , "openaiApiKey" .= openaiKey
+      , "claudeApiKey" .= claudeKey
+      , "geminiApiKey" .= geminiKey
       , "baseUrl" .= baseUrl
       , "stream" .= stream
       , "color" .= fmap colorToText color

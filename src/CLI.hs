@@ -104,9 +104,15 @@ mergeConfigWithOptions (Just config) opts =
       mergedModel = case modelName opts of
         Just m -> Just m
         Nothing -> defaultModel config
+      -- Select the appropriate API key based on the provider
+      getConfigApiKey p = case p of
+        OpenAI -> openaiApiKey config
+        Claude -> claudeApiKey config
+        Gemini -> geminiApiKey config
+        Ollama -> Nothing  -- Ollama doesn't require an API key
       mergedApiKey = case apiKeyOpt opts of
         Just k -> Just k
-        Nothing -> defaultApiKey config
+        Nothing -> mergedProvider >>= getConfigApiKey
       mergedBaseUrl = case baseUrlOpt opts of
         Just u -> Just u
         Nothing -> defaultBaseUrl config
