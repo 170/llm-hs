@@ -2,7 +2,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module LLM.MCP
+module Integration.MCP
   ( MCPClient
   , MCPTool(..)
   , MCPResource(..)
@@ -33,7 +33,7 @@ import GHC.Generics (Generic)
 import System.IO
 import System.Process
 import System.Environment (getEnvironment)
-import LLM.Config (MCPServer(..))
+import Config (MCPServer(..))
 
 -- | MCP Client handle
 data MCPClient = MCPClient

@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module LLM.Config
+module Config
   ( Config(..)
   , MCPServer(..)
   , loadConfig
@@ -15,7 +15,7 @@ import Data.Map.Strict (Map)
 import System.Directory (doesFileExist, getHomeDirectory)
 import System.FilePath ((</>))
 import Control.Exception (try, SomeException)
-import LLM.Types (Provider(..), ColorMode(..))
+import Core.Types (Provider(..), ColorMode(..))
 
 -- MCP Server configuration
 data MCPServer = MCPServer

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Lib
+module App
   ( runLLM
   ) where
 
@@ -20,18 +20,18 @@ import System.Console.Haskeline
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad (when)
 import Control.Exception (bracket)
-import qualified LLM.Types as Types
-import LLM.Types (LLMRequest(..), LLMResponse(..), LLMError(..), Message(..), ConversationHistory, MCPContext(..), Provider(..), ColorMode(..), LLMProvider(..))
-import LLM.OpenAI (openAIProvider)
-import LLM.Claude (claudeProvider)
-import LLM.Ollama (ollamaProvider)
-import LLM.Gemini (geminiProvider)
-import LLM.CLI (Options(..))
-import LLM.Spinner (startSpinner, stopSpinner)
-import LLM.Config (loadConfig, MCPServer, Config(..))
-import LLM.MCP (MCPClient, startMCPServer, stopMCPServer, listTools, callTool, MCPTool(..))
-import qualified LLM.Color as Color
-import qualified LLM.Format as Format
+import qualified Core.Types as Types
+import Core.Types (LLMRequest(..), LLMResponse(..), LLMError(..), Message(..), ConversationHistory, MCPContext(..), Provider(..), ColorMode(..), LLMProvider(..))
+import Providers.OpenAI (openAIProvider)
+import Providers.Claude (claudeProvider)
+import Providers.Ollama (ollamaProvider)
+import Providers.Gemini (geminiProvider)
+import CLI (Options(..))
+import UI.Spinner (startSpinner, stopSpinner)
+import Config (loadConfig, MCPServer, Config(..))
+import Integration.MCP (MCPClient, startMCPServer, stopMCPServer, listTools, callTool, MCPTool(..))
+import qualified UI.Color as Color
+import qualified UI.Format as Format
 
 runLLM :: Options -> IO ()
 runLLM opts = do
@@ -83,7 +83,7 @@ buildMCPContext clients = do
       case result of
         Left _ -> return []
         Right tools -> return
-          [ (LLM.MCP.toolName tool, maybe "" id (LLM.MCP.toolDescription tool), LLM.MCP.toolInputSchema tool)
+          [ (Integration.MCP.toolName tool, maybe "" id (Integration.MCP.toolDescription tool), Integration.MCP.toolInputSchema tool)
           | tool <- tools
           ]
 

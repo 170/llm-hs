@@ -2,7 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
-module LLM.Types
+module Core.Types
   ( Provider(..)
   , LLMRequest(..)
   , LLMResponse(..)

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module LLM.Spinner
+module UI.Spinner
   ( globalSpinnerThread
   , startSpinner
   , stopSpinner

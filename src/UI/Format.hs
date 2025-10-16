@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module LLM.Format
+module UI.Format
   ( drawBox
   , textWidth
   , BoxLine(..)

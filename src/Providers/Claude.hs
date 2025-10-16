@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module LLM.Claude (claudeProvider) where
+module Providers.Claude (claudeProvider) where
 
 import Control.Exception (try, SomeException)
 import Control.Monad (when)
@@ -19,9 +19,9 @@ import qualified Data.Text.IO as TIO
 import System.IO (hFlush, stdout)
 import Network.HTTP.Simple
 import Network.HTTP.Conduit (responseBody)
-import qualified LLM.Types as Types
-import LLM.Types (LLMRequest, LLMResponse(..), LLMError(..), LLMProvider(..))
-import LLM.Spinner (stopSpinner)
+import qualified Core.Types as Types
+import Core.Types (LLMRequest, LLMResponse(..), LLMError(..), LLMProvider(..))
+import UI.Spinner (stopSpinner)
 
 -- Tool types
 data ClaudeTool = ClaudeTool

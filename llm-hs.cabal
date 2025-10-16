@@ -25,18 +25,18 @@ source-repository head
 
 library
   exposed-modules:
-      Lib
-      LLM.Claude
-      LLM.CLI
-      LLM.Color
-      LLM.Config
-      LLM.Format
-      LLM.Gemini
-      LLM.MCP
-      LLM.Ollama
-      LLM.OpenAI
-      LLM.Spinner
-      LLM.Types
+      App
+      CLI
+      Config
+      Core.Types
+      Integration.MCP
+      Providers.Claude
+      Providers.Gemini
+      Providers.Ollama
+      Providers.OpenAI
+      UI.Color
+      UI.Format
+      UI.Spinner
   other-modules:
       Paths_llm_hs
   autogen-modules:

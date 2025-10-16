@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module LLM.OpenAI (openAIProvider) where
+module Providers.OpenAI (openAIProvider) where
 
 import Control.Exception (try, SomeException)
 import Control.Monad (when)
@@ -19,9 +19,9 @@ import qualified Data.Text.IO as TIO
 import System.IO (hFlush, stdout)
 import Network.HTTP.Simple
 import Network.HTTP.Conduit (responseBody)
-import qualified LLM.Types as Types
-import LLM.Types (LLMRequest, LLMResponse(..), LLMError(..), LLMProvider(..))
-import LLM.Spinner (stopSpinner)
+import qualified Core.Types as Types
+import Core.Types (LLMRequest, LLMResponse(..), LLMError(..), LLMProvider(..))
+import UI.Spinner (stopSpinner)
 
 data OpenAIToolCall = OpenAIToolCall
   { toolCallId :: Text
@@ -210,7 +210,7 @@ callOpenAINonStream apiKey' model' messages' tools' = do
                 content' = case messageContent msg of
                   Just c -> c
                   Nothing -> ""
-                toolCalls' = case LLM.OpenAI.toolCalls msg of
+                toolCalls' = case Providers.OpenAI.toolCalls msg of
                   Just calls -> Just $ map convertToolCall calls
                   Nothing -> Nothing
             in return $ Right $ LLMResponse content' toolCalls'

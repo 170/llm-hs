@@ -1,8 +1,8 @@
 module Main (main) where
 
-import Lib
-import LLM.CLI (parseOptions, mergeConfigWithOptions)
-import LLM.Config (loadConfig)
+import App
+import CLI (parseOptions, mergeConfigWithOptions)
+import Config (loadConfig)
 import System.Exit (die)
 
 main :: IO ()

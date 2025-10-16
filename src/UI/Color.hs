@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module LLM.Color
+module UI.Color
   ( ColorMode(..)
   , withColor
   , systemColor
@@ -14,7 +14,7 @@ module LLM.Color
 
 import Data.Text (Text)
 import qualified Data.Text as T
-import LLM.Types (ColorMode(..))
+import Core.Types (ColorMode(..))
 import System.Console.ANSI
 import System.IO (hIsTerminalDevice, stdout)
 

@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module LLM.CLI
+module CLI
   ( Options(..)
   , parseOptions
   , mergeConfigWithOptions
@@ -9,8 +9,8 @@ module LLM.CLI
 import Data.Text (Text)
 import qualified Data.Text as T
 import Options.Applicative
-import LLM.Types (Provider(..), ColorMode(..))
-import LLM.Config (Config(..))
+import Core.Types (Provider(..), ColorMode(..))
+import Config (Config(..))
 
 data Options = Options
   { provider :: Maybe Provider
