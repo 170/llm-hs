@@ -35,16 +35,16 @@ When you provide input via stdin, the tool processes a single query and exits:
 
 ```bash
 # Using OpenAI
-echo "Hello, how are you?" | llm-hs-exe --provider openai
+echo "Hello, how are you?" | llm-hs --provider openai
 
 # Using Claude
-echo "Explain quantum computing" | llm-hs-exe --provider claude
+echo "Explain quantum computing" | llm-hs --provider claude
 
 # Using Ollama (local)
-echo "Write a haiku" | llm-hs-exe --provider ollama
+echo "Write a haiku" | llm-hs --provider ollama
 
 # Using Gemini
-echo "What is Haskell?" | llm-hs-exe --provider gemini
+echo "What is Haskell?" | llm-hs --provider gemini
 ```
 
 #### 2. Interactive Mode (Multi-turn Conversation)
@@ -53,10 +53,10 @@ When you run the tool without piping input, it starts an interactive REPL sessio
 
 ```bash
 # Start interactive session with OpenAI
-llm-hs-exe --provider openai
+llm-hs --provider openai
 
 # Start interactive session with streaming
-llm-hs-exe --provider claude --stream
+llm-hs --provider claude --stream
 
 # Example session:
 # === Interactive Mode ===
@@ -109,34 +109,34 @@ Instead of passing API keys via command-line, you can set them as environment va
 
 ```bash
 # Using a specific model
-echo "Write a Python function" | llm-hs-exe -p openai -m gpt-4o
+echo "Write a Python function" | llm-hs -p openai -m gpt-4o
 
 # With API key from command line
-echo "Hello" | llm-hs-exe -p claude -k "your-api-key-here"
+echo "Hello" | llm-hs -p claude -k "your-api-key-here"
 
 # Using environment variable
 export OPENAI_API_KEY="your-api-key"
-echo "Generate a poem" | llm-hs-exe -p openai
+echo "Generate a poem" | llm-hs -p openai
 
 # Ollama with custom base URL
-echo "Explain recursion" | llm-hs-exe -p ollama -u "localhost:11434"
+echo "Explain recursion" | llm-hs -p ollama -u "localhost:11434"
 
 # Pipe from file
-cat prompt.txt | llm-hs-exe -p claude
+cat prompt.txt | llm-hs -p claude
 
 # Chain with other commands
-echo "List 5 programming languages" | llm-hs-exe -p gemini | grep "1."
+echo "List 5 programming languages" | llm-hs -p gemini | grep "1."
 
 # Streaming output (real-time response) - ALL PROVIDERS SUPPORTED!
-echo "Tell me a story" | llm-hs-exe -p openai --stream
-echo "Explain quantum computing" | llm-hs-exe -p claude --stream
-echo "Write a haiku" | llm-hs-exe -p ollama --stream
-echo "What is functional programming?" | llm-hs-exe -p gemini --stream
+echo "Tell me a story" | llm-hs -p openai --stream
+echo "Explain quantum computing" | llm-hs -p claude --stream
+echo "Write a haiku" | llm-hs -p ollama --stream
+echo "What is functional programming?" | llm-hs -p gemini --stream
 
 # Color output examples
-echo "Hello, world!" | llm-hs-exe -p openai --color always  # Force color output
-echo "Hello, world!" | llm-hs-exe -p claude --color never   # Disable color output
-llm-hs-exe -p openai --color auto  # Auto-detect terminal color support (default)
+echo "Hello, world!" | llm-hs -p openai --color always  # Force color output
+echo "Hello, world!" | llm-hs -p claude --color never   # Disable color output
+llm-hs -p openai --color auto  # Auto-detect terminal color support (default)
 ```
 
 ### Streaming Support
@@ -152,13 +152,13 @@ When streaming is enabled with the `--stream` or `-s` flag, the response will be
 
 ```bash
 # Short form
-echo "Write a poem about Haskell" | llm-hs-exe -p openai -s
+echo "Write a poem about Haskell" | llm-hs -p openai -s
 
 # Long form
-echo "Explain monads" | llm-hs-exe -p claude --stream
+echo "Explain monads" | llm-hs -p claude --stream
 
 # Works with all providers
-echo "Tell me a joke" | llm-hs-exe -p gemini -s
+echo "Tell me a joke" | llm-hs -p gemini -s
 ```
 
 ### Color Output
@@ -181,13 +181,13 @@ Color scheme:
 
 ```bash
 # Use default auto-detection
-llm-hs-exe -p openai
+llm-hs -p openai
 
 # Force color output (useful when piping)
-llm-hs-exe -p claude --color always
+llm-hs -p claude --color always
 
 # Disable colors (useful for logging)
-llm-hs-exe -p openai --color never
+llm-hs -p openai --color never
 ```
 
 ### Default Models
@@ -239,13 +239,13 @@ If you have `~/.llm-hs.json` with default provider and model:
 
 ```bash
 # Uses config file defaults
-llm-hs-exe
+llm-hs
 
 # Override provider from config
-llm-hs-exe --provider openai
+llm-hs --provider openai
 
 # Override model from config
-llm-hs-exe --model gpt-4o
+llm-hs --model gpt-4o
 ```
 
 ## MCP (Model Context Protocol) Support
@@ -365,7 +365,7 @@ stack build
 stack test
 
 # Run
-stack exec llm-hs-exe -- --provider openai < input.txt
+stack exec llm-hs -- --provider openai < input.txt
 ```
 
 ## License

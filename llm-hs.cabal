@@ -68,7 +68,7 @@ library
     , wcwidth
   default-language: Haskell2010
 
-executable llm-hs-exe
+executable llm-hs
   main-is: Main.hs
   other-modules:
       Paths_llm_hs
