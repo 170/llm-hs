@@ -40,6 +40,7 @@ dependencies:
 - stm
 - containers
 - time
+- wcwidth
 
 ghc-options:
 - -Wall

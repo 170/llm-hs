@@ -30,6 +30,7 @@ import LLM.Spinner (startSpinner, stopSpinner)
 import LLM.Config (loadConfig, MCPServer, Config(..))
 import LLM.MCP (MCPClient, startMCPServer, stopMCPServer, listTools, callTool, MCPTool(..))
 import qualified LLM.Color as Color
+import qualified LLM.Format as Format
 
 runLLM :: Options -> IO ()
 runLLM opts = do
@@ -222,8 +223,7 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
               case Types.toolCalls response of
                 Just calls | not (null calls) -> do
                   -- Execute tool calls
-                  toolHeaderText <- liftIO $ Color.toolColor colorMode "\n[Executing tools...]"
-                  liftIO $ TIO.putStrLn toolHeaderText
+                  liftIO $ TIO.putStrLn ""
                   toolResults <- liftIO $ mapM (executeToolCall mcpClients colorMode) calls
                   liftIO $ TIO.putStrLn ""
 
@@ -289,16 +289,24 @@ conversationLoop opts apiKey mcpClients mcpCtx colorMode history = do
 -- | Execute a tool call via MCP
 executeToolCall :: [MCPClient] -> ColorMode -> Types.ToolCall -> IO T.Text
 executeToolCall clients colorMode tc = do
-  -- Display tool execution info
-  toolNameText <- Color.toolColor colorMode $ "  🔧 " <> Types.toolName tc
-  TIO.putStrLn toolNameText
-  case Data.Aeson.eitherDecode (LBS.fromStrict $ TE.encodeUtf8 $ Types.toolArguments tc) of
+  -- Build content lines for the box
+  let title = "Tool: " <> Types.toolName tc
+  argsLines <- case Data.Aeson.eitherDecode (LBS.fromStrict $ TE.encodeUtf8 $ Types.toolArguments tc) of
     Right (Data.Aeson.Object obj) -> do
       let args = [ Key.toText k <> ": " <> formatValue v | (k, v) <- Data.Aeson.KeyMap.toList obj ]
-      mapM_ (\arg -> do
-        argText <- Color.systemColor colorMode $ "     " <> arg
-        TIO.putStrLn argText) args
-    _ -> return ()
+      return args
+    _ -> return []
+
+  -- Draw box around tool execution info
+  let boxLines = Format.drawBox title argsLines
+
+  -- Color and print each line
+  mapM_ (\boxLine -> do
+    coloredPrefix <- Color.toolColor colorMode (Format.boxPrefix boxLine)
+    coloredSuffix <- Color.toolColor colorMode (Format.boxSuffix boxLine)
+    let line = coloredPrefix <> Format.boxContent boxLine <> coloredSuffix
+    TIO.putStrLn line
+    ) boxLines
 
   -- Try each client until one succeeds
   results <- mapM (\client -> callTool client (Types.toolName tc) (decodeArgs $ Types.toolArguments tc)) clients

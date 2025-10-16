@@ -30,6 +30,7 @@ library
       LLM.CLI
       LLM.Color
       LLM.Config
+      LLM.Format
       LLM.Gemini
       LLM.MCP
       LLM.Ollama
@@ -64,6 +65,7 @@ library
     , stm
     , text
     , time
+    , wcwidth
   default-language: Haskell2010
 
 executable llm-hs-exe
@@ -97,6 +99,7 @@ executable llm-hs-exe
     , stm
     , text
     , time
+    , wcwidth
   default-language: Haskell2010
 
 test-suite llm-hs-test
@@ -131,4 +134,5 @@ test-suite llm-hs-test
     , stm
     , text
     , time
+    , wcwidth
   default-language: Haskell2010
