@@ -9,7 +9,7 @@ module App.Utils
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import qualified Data.Maybe
+import Data.Maybe (fromMaybe)
 import System.Environment (lookupEnv)
 import System.IO (stderr, hFlush, stdout)
 import Data.Time (getCurrentTime, formatTime, defaultTimeLocale)
@@ -27,15 +27,13 @@ getApiKey :: Options -> IO (Maybe T.Text)
 getApiKey opts = case apiKeyOpt opts of
   Just key -> return $ Just key
   Nothing -> do
-    let prov = case provider opts of
-          Just p -> p
-          Nothing -> error "Provider must be set"
-    envKey <- case prov of
-      OpenAI -> lookupEnv "OPENAI_API_KEY"
-      Claude -> lookupEnv "ANTHROPIC_API_KEY"
-      Ollama -> return Nothing  -- Ollama doesn't need API key
-      Gemini -> lookupEnv "GEMINI_API_KEY"
-    return $ T.pack <$> envKey
+    maybe (return Nothing) getEnvForProvider (provider opts)
+  where
+    getEnvForProvider :: Provider -> IO (Maybe T.Text)
+    getEnvForProvider OpenAI = fmap T.pack <$> lookupEnv "OPENAI_API_KEY"
+    getEnvForProvider Claude = fmap T.pack <$> lookupEnv "ANTHROPIC_API_KEY"
+    getEnvForProvider Ollama = return Nothing  -- Ollama doesn't need API key
+    getEnvForProvider Gemini = fmap T.pack <$> lookupEnv "GEMINI_API_KEY"
 
 -- | Create system message with current date and time
 createSystemMessage :: Maybe T.Text -> IO Message
@@ -70,23 +68,20 @@ getProvider prov = case prov of
 
 -- | Call the appropriate LLM provider
 callProvider :: Options -> LLMRequest -> IO (Either LLMError LLMResponse)
-callProvider opts request =
-  let prov = case provider opts of
-        Just p -> p
-        Nothing -> error "Provider must be set"
-      providerInstance = getProvider prov
-  in callLLM providerInstance request
+callProvider opts request = case provider opts of
+  Nothing -> return $ Left $ ConfigError "Provider must be set"
+  Just prov -> callLLM (getProvider prov) request
 
 -- | Handle and display the result from an LLM call
 handleResult :: Options -> Either LLMError LLMResponse -> IO ()
 handleResult opts result = do
-  let colorMode = Data.Maybe.fromMaybe AutoColor (colorOpt opts)
+  let colorMode = fromMaybe AutoColor (colorOpt opts)
   case result of
     Left err -> do
       errorText <- Color.errorColor colorMode $ "Error: " <> T.pack (show err)
       TIO.hPutStrLn stderr errorText
     Right response -> do
-      if Data.Maybe.fromMaybe False (streamOpt opts)
+      if fromMaybe False (streamOpt opts)
         then TIO.putStrLn ""  -- Add newline after streaming
         else do
           assistantText <- Color.assistantColor colorMode $ content response

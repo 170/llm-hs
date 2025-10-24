@@ -19,27 +19,27 @@ data BoxLine = BoxLine
 
 -- | Calculate display width of text (considering full-width characters)
 textWidth :: Text -> Int
-textWidth = sum . map charWidth . T.unpack
-  where
-    charWidth c = max 0 (wcwidth c)  -- wcwidth returns -1 for control characters
+textWidth = sum . map (max 0 . wcwidth) . T.unpack
 
 -- | Draw a box around text content (returns structured data for coloring)
 drawBox :: Text -> [Text] -> [BoxLine]
 drawBox title content =
-  let maxLen = maximum $ map textWidth (title : content)
-      topBorder = "┌─" <> T.replicate maxLen "─" <> "─┐"
-      bottomBorder = "└─" <> T.replicate maxLen "─" <> "─┘"
-      separator = "├─" <> T.replicate maxLen "─" <> "─┤"
+  let allLines = title : content
+      maxLen = maximum $ map textWidth allLines
+      border c = c <> "─" <> T.replicate maxLen "─" <> "─" <> mirrorChar c
 
       padLine line =
         let width = textWidth line
             padding = maxLen - width
         in BoxLine "│ " (line <> T.replicate padding " ") " │"
 
-      titleLine = padLine title
-      contentLines = map padLine content
-
-  in [ BoxLine topBorder "" ""
-     , titleLine
-     , BoxLine separator "" ""
-     ] ++ contentLines ++ [BoxLine bottomBorder "" ""]
+  in BoxLine (border "┌") "" ""
+   : padLine title
+   : BoxLine (border "├") "" ""
+   : map padLine content
+  ++ [BoxLine (border "└") "" ""]
+  where
+    mirrorChar "┌" = "┐"
+    mirrorChar "├" = "┤"
+    mirrorChar "└" = "┘"
+    mirrorChar _ = ""

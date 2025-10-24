@@ -59,10 +59,10 @@ data LLMResponse = LLMResponse
 
 -- | Error types
 data LLMError
-  = NetworkError String
-  | APIError String
-  | ParseError String
-  | ConfigError String
+  = NetworkError Text
+  | APIError Text
+  | ParseError Text
+  | ConfigError Text
   deriving (Show, Eq, Generic)
 
 -- | Message in a conversation

@@ -4,9 +4,10 @@
 module Providers.Ollama (ollamaProvider) where
 
 import Control.Exception (try, SomeException)
-import Control.Monad (unless, when)
+import Control.Monad (unless, when, guard)
 import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, eitherDecode, encode)
-import qualified Data.Maybe
+import Data.Bool (bool)
+import Data.Maybe (fromMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Conduit ((.|), runConduit)
@@ -152,27 +153,28 @@ mcpToolsToOllama ctx =
 
 callOllama :: LLMRequest -> IO (Either LLMError LLMResponse)
 callOllama llmReq = do
-  let model' = Data.Maybe.fromMaybe "llama3.2" (Types.model llmReq)
-      baseUrl' = Data.Maybe.fromMaybe "localhost:11434" (Types.baseUrl llmReq)
+  let model' = fromMaybe "llama3.2" (Types.model llmReq)
+      baseUrl' = fromMaybe "localhost:11434" (Types.baseUrl llmReq)
       -- Convert MCP tools to Ollama format
-      tools' = case Types.mcpContext llmReq of
-        Nothing -> Nothing
-        Just ctx -> if null (Types.mcpTools ctx) then Nothing else Just $ mcpToolsToOllama ctx
+      tools' = Types.mcpContext llmReq >>= \ctx ->
+        guard (not $ null $ Types.mcpTools ctx) >> Just (mcpToolsToOllama ctx)
 
   -- Use chat endpoint if tools are present, otherwise use generate
-  case tools' of
-    Just ts -> callOllamaChat baseUrl' model' llmReq ts
-    Nothing -> callOllamaGenerate baseUrl' model' llmReq
+  maybe (callOllamaGenerate baseUrl' model' llmReq)
+        (callOllamaChat baseUrl' model' llmReq)
+        tools'
 
 -- Call Ollama chat endpoint (with tool support)
 callOllamaChat :: Text -> Text -> LLMRequest -> [OllamaTool] -> IO (Either LLMError LLMResponse)
 callOllamaChat baseUrl' model' llmReq tools' = do
-  let historyMessages = map (\msg -> OllamaChatMessage (Types.role msg) (Types.messageContent msg) Nothing) (Types.history llmReq)
+  let historyMessages = map toOllamaMessage (Types.history llmReq)
       allMessages = historyMessages ++ [OllamaChatMessage "user" (Types.prompt llmReq) Nothing]
 
-  if Types.streaming llmReq
-    then callOllamaChatStream baseUrl' model' allMessages tools'
-    else callOllamaChatNonStream baseUrl' model' allMessages tools'
+  bool (callOllamaChatNonStream baseUrl' model' allMessages tools')
+       (callOllamaChatStream baseUrl' model' allMessages tools')
+       (Types.streaming llmReq)
+  where
+    toOllamaMessage msg = OllamaChatMessage (Types.role msg) (Types.messageContent msg) Nothing
 
 callOllamaChatNonStream :: Text -> Text -> [OllamaChatMessage] -> [OllamaTool] -> IO (Either LLMError LLMResponse)
 callOllamaChatNonStream baseUrl' model' messages' tools' = do
@@ -188,7 +190,7 @@ callOllamaChatNonStream baseUrl' model' messages' tools' = do
     response <- httpLBS request
     let body = getResponseBody response
     case eitherDecode body of
-      Left err -> return $ Left $ ParseError err
+      Left err -> return $ Left $ ParseError $ T.pack err
       Right chatResp -> do
         let msg = chatRespMessage chatResp
             content' = respMsgContent msg
@@ -198,7 +200,7 @@ callOllamaChatNonStream baseUrl' model' messages' tools' = do
         return $ Right $ LLMResponse content' toolCalls'
 
   case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
+    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
     Right res -> return res
   where
     convertToolCall :: Int -> OllamaToolCall -> Types.ToolCall
@@ -228,7 +230,7 @@ callOllamaChatStream baseUrl' model' messages' tools' = do
       readIORef toolCallsRef
 
   case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
+    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
     Right toolCalls' -> return $ Right $ LLMResponse "" toolCalls'
 
 processChatChunkWithTools :: IORef Bool -> IORef (Maybe [Types.ToolCall]) -> BS.ByteString -> IO ()
@@ -269,9 +271,9 @@ callOllamaGenerate baseUrl' model' llmReq = do
                    then Types.prompt llmReq
                    else historyText <> "\nuser: " <> Types.prompt llmReq
 
-  if Types.streaming llmReq
-    then callOllamaGenerateStream baseUrl' model' fullPrompt
-    else callOllamaGenerateNonStream baseUrl' model' fullPrompt
+  bool (callOllamaGenerateNonStream baseUrl' model' fullPrompt)
+       (callOllamaGenerateStream baseUrl' model' fullPrompt)
+       (Types.streaming llmReq)
 
 callOllamaGenerateNonStream :: Text -> Text -> Text -> IO (Either LLMError LLMResponse)
 callOllamaGenerateNonStream baseUrl' model' prompt' = do
@@ -286,11 +288,11 @@ callOllamaGenerateNonStream baseUrl' model' prompt' = do
     response <- httpLBS request
     let body = getResponseBody response
     case eitherDecode body of
-      Left err -> return $ Left $ ParseError err
+      Left err -> return $ Left $ ParseError $ T.pack err
       Right genResp -> return $ Right $ LLMResponse (ollamaResponse genResp) Nothing
 
   case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
+    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
     Right res -> return res
 
 callOllamaGenerateStream :: Text -> Text -> Text -> IO (Either LLMError LLMResponse)
@@ -311,7 +313,7 @@ callOllamaGenerateStream baseUrl' model' prompt' = do
       return ()
 
   case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
+    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
     Right () -> return $ Right $ LLMResponse "" Nothing
 
 processGenerateChunk :: IORef Bool -> BS.ByteString -> IO ()

@@ -4,9 +4,12 @@
 module Providers.Claude (claudeProvider) where
 
 import Control.Exception (try, SomeException)
-import Control.Monad (unless, when)
+import Control.Monad (unless, when, guard)
+import Data.Foldable (forM_)
 import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, eitherDecode, encode)
-import qualified Data.Maybe
+import Data.Bool (bool)
+import Data.List (partition)
+import Data.Maybe (fromMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Conduit ((.|), runConduit)
@@ -66,13 +69,9 @@ data ClaudeRequest = ClaudeRequest
 instance ToJSON ClaudeRequest where
   toJSON (ClaudeRequest m msgs mt s sys ts) =
     let base = ["model" .= m, "messages" .= msgs, "max_tokens" .= mt, "stream" .= s]
-        withSys = case sys of
-          Nothing -> base
-          Just sysText -> base ++ ["system" .= sysText]
-        withTools = case ts of
-          Nothing -> withSys
-          Just toolList -> withSys ++ ["tools" .= toolList]
-    in object withTools
+        withSys = maybe [] (\sysText -> ["system" .= sysText]) sys
+        withTools = maybe [] (\toolList -> ["tools" .= toolList]) ts
+    in object (base <> withSys <> withTools)
 
 -- Content types for response
 data ClaudeContentBlock
@@ -133,31 +132,32 @@ mcpToolsToClaude ctx =
   ]
 
 callClaude :: LLMRequest -> IO (Either LLMError LLMResponse)
-callClaude llmReq = do
-  let apiKey' = Data.Maybe.fromMaybe (error "Claude API key is required") (Types.apiKey llmReq)
-      model' = Data.Maybe.fromMaybe "claude-3-5-sonnet-20241022" (Types.model llmReq)
-      -- Extract system messages and convert to system prompt
-      (systemPrompt', userMessages) = extractSystemMessages (Types.history llmReq)
-      -- Build messages from non-system history + current prompt
-      historyMessages = map (\msg -> ClaudeMessage (Types.role msg) (Types.messageContent msg)) userMessages
-      allMessages = historyMessages ++ [ClaudeMessage "user" (Types.prompt llmReq)]
-      -- Convert MCP tools to Claude format
-      tools' = case Types.mcpContext llmReq of
-        Nothing -> Nothing
-        Just ctx -> if null (Types.mcpTools ctx) then Nothing else Just $ mcpToolsToClaude ctx
+callClaude llmReq = case Types.apiKey llmReq of
+  Nothing -> return $ Left $ ConfigError "Claude API key is required"
+  Just apiKey' -> do
+    let model' = fromMaybe "claude-3-5-sonnet-20241022" (Types.model llmReq)
+        -- Extract system messages and convert to system prompt
+        (systemPrompt', userMessages) = extractSystemMessages (Types.history llmReq)
+        -- Build messages from non-system history + current prompt
+        historyMessages = map toClaudeMessage userMessages
+        allMessages = historyMessages ++ [ClaudeMessage "user" (Types.prompt llmReq)]
+        -- Convert MCP tools to Claude format
+        tools' = Types.mcpContext llmReq >>= \ctx ->
+          guard (not $ null $ Types.mcpTools ctx) >> Just (mcpToolsToClaude ctx)
 
-  if Types.streaming llmReq
-    then callClaudeStream apiKey' model' allMessages systemPrompt' tools'
-    else callClaudeNonStream apiKey' model' allMessages systemPrompt' tools'
+    bool (callClaudeNonStream apiKey' model' allMessages systemPrompt' tools')
+         (callClaudeStream apiKey' model' allMessages systemPrompt' tools')
+         (Types.streaming llmReq)
   where
+    toClaudeMessage msg = ClaudeMessage (Types.role msg) (Types.messageContent msg)
+
     -- Extract system messages and combine them into a single system prompt
     extractSystemMessages :: [Types.Message] -> (Maybe Text, [Types.Message])
     extractSystemMessages msgs =
-      let systemMsgs = [Types.messageContent m | m <- msgs, Types.role m == "system"]
-          nonSystemMsgs = [m | m <- msgs, Types.role m /= "system"]
-          systemPrompt' = if null systemMsgs
-                         then Nothing
-                         else Just $ T.intercalate "\n\n" systemMsgs
+      let (systemMsgs, nonSystemMsgs) = partition (\m -> Types.role m == "system") msgs
+          systemPrompt' = case map Types.messageContent systemMsgs of
+            [] -> Nothing
+            xs -> Just $ T.intercalate "\n\n" xs
       in (systemPrompt', nonSystemMsgs)
 
 -- | Build Claude request
@@ -179,41 +179,49 @@ buildClaudeRequest apiKey' model' messages' systemPrompt' tools' stream' = do
 
 callClaudeNonStream :: Text -> Text -> [ClaudeMessage] -> Maybe Text -> Maybe [ClaudeTool] -> IO (Either LLMError LLMResponse)
 callClaudeNonStream apiKey' model' messages' systemPrompt' tools' = do
-  result <- try $ do
-    request <- buildClaudeRequest apiKey' model' messages' systemPrompt' tools' False
-    response <- httpLBS request
-    let body = getResponseBody response
-        statusCode = getResponseStatusCode response
-    -- Debug: print error responses
-    when (statusCode /= 200) $ do
-      TIO.hPutStrLn stderr $ "Claude API Error (status " <> T.pack (show statusCode) <> "):"
-      LBS.hPutStr stderr body
-      TIO.hPutStrLn stderr ""
-    case eitherDecode body of
-      Left err -> return $ Left $ ParseError $ err ++ " (status: " ++ show statusCode ++ ")"
-      Right claudeResp -> do
-        let (textContent', toolCalls') = extractContent (responseContent claudeResp)
-        return $ Right $ LLMResponse textContent' toolCalls'
-
+  result <- try $ executeClaudeRequest apiKey' model' messages' systemPrompt' tools'
   case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
+    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
     Right res -> return res
-  where
-    extractContent :: [ClaudeContentBlock] -> (Text, Maybe [Types.ToolCall])
-    extractContent blocks =
-      let texts = [t | ClaudeTextBlock t <- blocks]
-          toolUseBlocks = [tu | ClaudeToolUseBlock tu <- blocks]
-          textContent' = T.intercalate "\n" texts
-          toolCalls' = if null toolUseBlocks
-                       then Nothing
-                       else Just $ map convertToolUse toolUseBlocks
-      in (textContent', toolCalls')
 
-    convertToolUse :: ClaudeToolUse -> Types.ToolCall
-    convertToolUse tu = Types.ToolCall
-      (toolUseId tu)
-      (toolUseName tu)
-      (TE.decodeUtf8 $ LBS.toStrict $ encode $ toolUseInput tu)  -- Convert Value to JSON string
+executeClaudeRequest :: Text -> Text -> [ClaudeMessage] -> Maybe Text -> Maybe [ClaudeTool] -> IO (Either LLMError LLMResponse)
+executeClaudeRequest apiKey' model' messages' systemPrompt' tools' = do
+  request <- buildClaudeRequest apiKey' model' messages' systemPrompt' tools' False
+  response <- httpLBS request
+  let body = getResponseBody response
+      statusCode = getResponseStatusCode response
+  when (statusCode /= 200) $ printErrorResponse statusCode body
+  parseClaudeResponse body statusCode
+
+printErrorResponse :: Int -> LBS.ByteString -> IO ()
+printErrorResponse statusCode body = do
+  TIO.hPutStrLn stderr $ "Claude API Error (status " <> T.pack (show statusCode) <> "):"
+  LBS.hPutStr stderr body
+  TIO.hPutStrLn stderr ""
+
+parseClaudeResponse :: LBS.ByteString -> Int -> IO (Either LLMError LLMResponse)
+parseClaudeResponse body statusCode =
+  case eitherDecode body of
+    Left err -> return $ Left $ ParseError $ T.pack $ err ++ " (status: " ++ show statusCode ++ ")"
+    Right claudeResp -> do
+      let (textContent', toolCalls') = extractContent (responseContent claudeResp)
+      return $ Right $ LLMResponse textContent' toolCalls'
+
+extractContent :: [ClaudeContentBlock] -> (Text, Maybe [Types.ToolCall])
+extractContent blocks =
+  let texts = [t | ClaudeTextBlock t <- blocks]
+      toolUseBlocks = [tu | ClaudeToolUseBlock tu <- blocks]
+      textContent' = T.intercalate "\n" texts
+      toolCalls' = if null toolUseBlocks
+                   then Nothing
+                   else Just $ map convertToolUse toolUseBlocks
+  in (textContent', toolCalls')
+
+convertToolUse :: ClaudeToolUse -> Types.ToolCall
+convertToolUse tu = Types.ToolCall
+  (toolUseId tu)
+  (toolUseName tu)
+  (TE.decodeUtf8 $ LBS.toStrict $ encode $ toolUseInput tu)
 
 callClaudeStream :: Text -> Text -> [ClaudeMessage] -> Maybe Text -> Maybe [ClaudeTool] -> IO (Either LLMError LLMResponse)
 callClaudeStream apiKey' model' messages' systemPrompt' tools' = do
@@ -228,7 +236,7 @@ callClaudeStream apiKey' model' messages' systemPrompt' tools' = do
       return ()
 
   case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
+    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
     Right () -> return $ Right $ LLMResponse "" Nothing
   where
     extractData line
@@ -239,30 +247,36 @@ processClaudeChunk :: IORef Bool -> BS.ByteString -> IO ()
 processClaudeChunk firstChunkRef chunk
   | BS.null chunk = return ()
   | otherwise = case eitherDecode (LBS.fromStrict chunk) of
-      Right (event :: ClaudeStreamEvent) ->
-        case eventType event of
-          "error" -> do
-            -- Print error to stderr
-            TIO.hPutStrLn stderr "Claude API Error in stream:"
-            LBS.hPutStr stderr (LBS.fromStrict chunk)
-            TIO.hPutStrLn stderr ""
-          "content_block_delta" ->
-            case eventDelta event of
-              Just delta ->
-                case deltaText delta of
-                  Just txt -> do
-                    -- Stop spinner on first chunk with content
-                    unless (T.null txt) $ do
-                      isFirst <- readIORef firstChunkRef
-                      when isFirst $ do
-                        writeIORef firstChunkRef False
-                        stopSpinner
-                    -- Output the content immediately
-                    TIO.putStr txt
-                    hFlush stdout
-                  Nothing -> return ()
-              Nothing -> return ()
-          _ -> return ()
-      Left _ ->
-        -- Silently ignore parse errors - not all stream events match our expected format
-        return ()
+      Right (event :: ClaudeStreamEvent) -> handleClaudeStreamEvent firstChunkRef chunk event
+      Left _ -> return () -- Silently ignore parse errors
+
+handleClaudeStreamEvent :: IORef Bool -> BS.ByteString -> ClaudeStreamEvent -> IO ()
+handleClaudeStreamEvent firstChunkRef chunk event =
+  case eventType event of
+    "error" -> printStreamError chunk
+    "content_block_delta" -> handleContentBlockDelta firstChunkRef event
+    _ -> return ()
+
+printStreamError :: BS.ByteString -> IO ()
+printStreamError chunk = do
+  TIO.hPutStrLn stderr "Claude API Error in stream:"
+  LBS.hPutStr stderr (LBS.fromStrict chunk)
+  TIO.hPutStrLn stderr ""
+
+handleContentBlockDelta :: IORef Bool -> ClaudeStreamEvent -> IO ()
+handleContentBlockDelta firstChunkRef event =
+  forM_ (eventDelta event) (handleDeltaText firstChunkRef)
+
+handleDeltaText :: IORef Bool -> ClaudeStreamDelta -> IO ()
+handleDeltaText firstChunkRef delta =
+  forM_ (deltaText delta) (outputDeltaText firstChunkRef)
+
+outputDeltaText :: IORef Bool -> Text -> IO ()
+outputDeltaText firstChunkRef txt =
+  unless (T.null txt) $ do
+    isFirst <- readIORef firstChunkRef
+    when isFirst $ do
+      writeIORef firstChunkRef False
+      stopSpinner
+    TIO.putStr txt
+    hFlush stdout

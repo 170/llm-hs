@@ -59,49 +59,59 @@ buildMCPContext clients = do
 -- | Execute a tool call via MCP
 executeToolCall :: [MCPClient] -> ColorMode -> Types.ToolCall -> IO T.Text
 executeToolCall clients colorMode tc = do
-  -- Build content lines for the box
+  printToolCallInfo colorMode tc
+  result <- callToolWithClients clients tc
+  return $ extractTextFromResult result
+
+printToolCallInfo :: ColorMode -> Types.ToolCall -> IO ()
+printToolCallInfo colorMode tc = do
   let title = "Tool: " <> Types.toolName tc
-  argsLines <- case Data.Aeson.eitherDecode (LBS.fromStrict $ TE.encodeUtf8 $ Types.toolArguments tc) of
-    Right (Data.Aeson.Object obj) -> do
-      let args = [ Key.toText k <> ": " <> formatValue v | (k, v) <- Data.Aeson.KeyMap.toList obj ]
-      return args
+  argsLines <- parseArgumentLines (Types.toolArguments tc)
+  let boxLines = Format.drawBox title argsLines
+  mapM_ (printColoredBoxLine colorMode) boxLines
+
+parseArgumentLines :: T.Text -> IO [T.Text]
+parseArgumentLines argsText =
+  case Data.Aeson.eitherDecode (LBS.fromStrict $ TE.encodeUtf8 argsText) of
+    Right (Data.Aeson.Object obj) ->
+      return [ Key.toText k <> ": " <> formatValue v | (k, v) <- Data.Aeson.KeyMap.toList obj ]
     _ -> return []
 
-  -- Draw box around tool execution info
-  let boxLines = Format.drawBox title argsLines
+printColoredBoxLine :: ColorMode -> Format.BoxLine -> IO ()
+printColoredBoxLine colorMode boxLine = do
+  coloredPrefix <- Color.toolColor colorMode (Format.boxPrefix boxLine)
+  coloredSuffix <- Color.toolColor colorMode (Format.boxSuffix boxLine)
+  let line = coloredPrefix <> Format.boxContent boxLine <> coloredSuffix
+  TIO.putStrLn line
 
-  -- Color and print each line
-  mapM_ (\boxLine -> do
-    coloredPrefix <- Color.toolColor colorMode (Format.boxPrefix boxLine)
-    coloredSuffix <- Color.toolColor colorMode (Format.boxSuffix boxLine)
-    let line = coloredPrefix <> Format.boxContent boxLine <> coloredSuffix
-    TIO.putStrLn line
-    ) boxLines
-
-  -- Try each client until one succeeds
-  results <- mapM (\client -> callTool client (Types.toolName tc) (decodeArgs $ Types.toolArguments tc)) clients
-
+callToolWithClients :: [MCPClient] -> Types.ToolCall -> IO T.Text
+callToolWithClients clients tc = do
+  let toolArgs = decodeArgs $ Types.toolArguments tc
+  results <- mapM (\client -> callTool client (Types.toolName tc) toolArgs) clients
   case rights results of
-    (result:_) -> do
-      -- Parse the result to extract relevant text
-      case result of
-        Data.Aeson.Object obj ->
-          case Data.Aeson.KeyMap.lookup "content" obj of
-            Just (Data.Aeson.Array arr) ->
-              let textParts = [t | Data.Aeson.Object o <- toList arr, Just (Data.Aeson.String t) <- [Data.Aeson.KeyMap.lookup "text" o]]
-              in return $ T.intercalate "\n" textParts
-            _ -> return $ T.pack $ show result
-        _ -> return $ T.pack $ show result
+    (result:_) -> return $ extractTextFromValue result
     [] -> return "Error: Tool call failed"
-  where
-    decodeArgs :: T.Text -> Data.Aeson.Value
-    decodeArgs argsText = case Data.Aeson.eitherDecode (LBS.fromStrict $ TE.encodeUtf8 argsText) of
-      Right val -> val
-      Left _ -> Data.Aeson.object []
 
-    formatValue :: Data.Aeson.Value -> T.Text
-    formatValue (Data.Aeson.String s) = "\"" <> s <> "\""
-    formatValue (Data.Aeson.Number n) = T.pack (show n)
-    formatValue (Data.Aeson.Bool b) = T.pack (show b)
-    formatValue Data.Aeson.Null = "null"
-    formatValue v = T.pack (show v)
+decodeArgs :: T.Text -> Data.Aeson.Value
+decodeArgs argsText = case Data.Aeson.eitherDecode (LBS.fromStrict $ TE.encodeUtf8 argsText) of
+  Right val -> val
+  Left _ -> Data.Aeson.object []
+
+extractTextFromValue :: Data.Aeson.Value -> T.Text
+extractTextFromValue (Data.Aeson.Object obj) =
+  case Data.Aeson.KeyMap.lookup "content" obj of
+    Just (Data.Aeson.Array arr) ->
+      let textParts = [t | Data.Aeson.Object o <- toList arr, Just (Data.Aeson.String t) <- [Data.Aeson.KeyMap.lookup "text" o]]
+      in T.intercalate "\n" textParts
+    _ -> T.pack $ show (Data.Aeson.Object obj)
+extractTextFromValue v = T.pack $ show v
+
+extractTextFromResult :: T.Text -> T.Text
+extractTextFromResult = id
+
+formatValue :: Data.Aeson.Value -> T.Text
+formatValue (Data.Aeson.String s) = "\"" <> s <> "\""
+formatValue (Data.Aeson.Number n) = T.pack (show n)
+formatValue (Data.Aeson.Bool b) = T.pack (show b)
+formatValue Data.Aeson.Null = "null"
+formatValue v = T.pack (show v)

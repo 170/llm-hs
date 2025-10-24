@@ -169,32 +169,44 @@ stopMCPServer client = do
 
 -- | Handle responses from MCP server
 responseHandler :: MCPClient -> IO ()
-responseHandler client = forever $ do
-  catch (do
-    line <- BS8.hGetLine (clientStdout client)
-    let lazyLine = LBS.fromStrict line
-    case eitherDecode lazyLine of
-      Left _ -> return ()
-      Right response -> do
-        case respId response of
-          Just msgId -> do
-            -- Find and complete pending response
-            mTMVar <- atomically $ do
-              pending <- readTVar (clientPendingResponses client)
-              case Map.lookup msgId pending of
-                Nothing -> return Nothing
-                Just tmvar -> do
-                  modifyTVar' (clientPendingResponses client) (Map.delete msgId)
-                  return $ Just tmvar
+responseHandler client = forever $
+  catch (handleLine client) (\(_ :: SomeException) -> return ())
 
-            case mTMVar of
-              Just tmvar ->
-                case respResult response of
-                  Just result -> atomically $ putTMVar tmvar result
-                  Nothing -> return () -- Error case
-              Nothing -> return ()
-          Nothing -> return () -- Notification
-    ) (\(_ :: SomeException) -> return ())
+handleLine :: MCPClient -> IO ()
+handleLine client = do
+  line <- BS8.hGetLine (clientStdout client)
+  let lazyLine = LBS.fromStrict line
+  case eitherDecode lazyLine of
+    Left _ -> return ()
+    Right response -> handleResponse client response
+
+handleResponse :: MCPClient -> JSONRPCResponse -> IO ()
+handleResponse client response =
+  case respId response of
+    Just msgId -> handleResponseWithId client msgId response
+    Nothing -> return () -- Notification
+
+handleResponseWithId :: MCPClient -> Int -> JSONRPCResponse -> IO ()
+handleResponseWithId client msgId response = do
+  mTMVar <- findAndRemovePendingResponse client msgId
+  case mTMVar of
+    Just tmvar -> completePendingResponse tmvar response
+    Nothing -> return ()
+
+findAndRemovePendingResponse :: MCPClient -> Int -> IO (Maybe (TMVar Value))
+findAndRemovePendingResponse client msgId = atomically $ do
+  pending <- readTVar (clientPendingResponses client)
+  case Map.lookup msgId pending of
+    Nothing -> return Nothing
+    Just tmvar -> do
+      modifyTVar' (clientPendingResponses client) (Map.delete msgId)
+      return $ Just tmvar
+
+completePendingResponse :: TMVar Value -> JSONRPCResponse -> IO ()
+completePendingResponse tmvar response =
+  case respResult response of
+    Just result -> atomically $ putTMVar tmvar result
+    Nothing -> return () -- Error case
 
 -- | Send a JSON-RPC request and wait for response
 sendRequest :: MCPClient -> Text -> Maybe Value -> IO (Either String Value)
@@ -273,17 +285,21 @@ listTools client = do
   result <- sendRequest client "tools/list" (Just $ object [])
   case result of
     Left err -> return $ Left err
-    Right value ->
-      case fromJSON value of
-        Error err -> return $ Left $ "Failed to parse tools: " ++ err
-        Success obj ->
-          case obj of
-            Object o ->
-              case fromJSON <$> lookup "tools" o of
-                Just (Success tools) -> return $ Right tools
-                Just (Error err) -> return $ Left $ "Failed to parse tools array: " ++ err
-                Nothing -> return $ Right []
-            _ -> return $ Left "Invalid response format"
+    Right value -> parseToolsResponse value
+
+parseToolsResponse :: Value -> IO (Either String [MCPTool])
+parseToolsResponse value =
+  case fromJSON value of
+    Error err -> return $ Left $ "Failed to parse tools: " ++ err
+    Success obj -> extractToolsFromObject obj
+
+extractToolsFromObject :: Value -> IO (Either String [MCPTool])
+extractToolsFromObject (Object o) =
+  case fromJSON <$> lookup "tools" o of
+    Just (Success tools) -> return $ Right tools
+    Just (Error err) -> return $ Left $ "Failed to parse tools array: " ++ err
+    Nothing -> return $ Right []
+extractToolsFromObject _ = return $ Left "Invalid response format"
 
 -- | Call a tool on the MCP server
 callTool :: MCPClient -> Text -> Value -> IO (Either String Value)
@@ -300,17 +316,21 @@ listResources client = do
   result <- sendRequest client "resources/list" Nothing
   case result of
     Left err -> return $ Left err
-    Right value ->
-      case fromJSON value of
-        Error err -> return $ Left $ "Failed to parse resources: " ++ err
-        Success obj ->
-          case obj of
-            Object o ->
-              case fromJSON <$> lookup "resources" o of
-                Just (Success resources) -> return $ Right resources
-                Just (Error err) -> return $ Left $ "Failed to parse resources array: " ++ err
-                Nothing -> return $ Right []
-            _ -> return $ Left "Invalid response format"
+    Right value -> parseResourcesResponse value
+
+parseResourcesResponse :: Value -> IO (Either String [MCPResource])
+parseResourcesResponse value =
+  case fromJSON value of
+    Error err -> return $ Left $ "Failed to parse resources: " ++ err
+    Success obj -> extractResourcesFromObject obj
+
+extractResourcesFromObject :: Value -> IO (Either String [MCPResource])
+extractResourcesFromObject (Object o) =
+  case fromJSON <$> lookup "resources" o of
+    Just (Success resources) -> return $ Right resources
+    Just (Error err) -> return $ Left $ "Failed to parse resources array: " ++ err
+    Nothing -> return $ Right []
+extractResourcesFromObject _ = return $ Left "Invalid response format"
 
 -- | Read a resource from the MCP server
 readResource :: MCPClient -> Text -> IO (Either String Value)

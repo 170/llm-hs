@@ -4,9 +4,10 @@
 module Providers.Gemini (geminiProvider) where
 
 import Control.Exception (try, SomeException)
-import Control.Monad (unless, when)
+import Control.Monad (unless, when, guard)
 import Data.Aeson (FromJSON(..), ToJSON(..), Value(..), object, (.=), (.:), (.:?), withObject, eitherDecode, encode)
-import qualified Data.Maybe
+import Data.Bool (bool)
+import Data.Maybe (fromMaybe)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
@@ -132,20 +133,22 @@ mcpToolsToGemini ctx =
   [GeminiTool [GeminiFunctionDeclaration name desc (cleanSchemaForGemini schema) | (name, desc, schema) <- Types.mcpTools ctx]]
 
 callGemini :: LLMRequest -> IO (Either LLMError LLMResponse)
-callGemini llmReq = do
-  let apiKey' = Data.Maybe.fromMaybe (error "Gemini API key is required") (Types.apiKey llmReq)
-      model' = Data.Maybe.fromMaybe "gemini-1.5-flash" (Types.model llmReq)
-      -- Build contents from history + current prompt
-      historyContents = map (\msg -> GeminiContent [GeminiPart (Just $ Types.messageContent msg) Nothing]) (Types.history llmReq)
-      allContents = historyContents ++ [GeminiContent [GeminiPart (Just $ Types.prompt llmReq) Nothing]]
-      -- Convert MCP tools to Gemini format
-      tools' = case Types.mcpContext llmReq of
-        Nothing -> Nothing
-        Just ctx -> if null (Types.mcpTools ctx) then Nothing else Just $ mcpToolsToGemini ctx
+callGemini llmReq = case Types.apiKey llmReq of
+  Nothing -> return $ Left $ ConfigError "Gemini API key is required"
+  Just apiKey' -> do
+    let model' = fromMaybe "gemini-1.5-flash" (Types.model llmReq)
+        -- Build contents from history + current prompt
+        historyContents = map toGeminiContent (Types.history llmReq)
+        allContents = historyContents ++ [GeminiContent [GeminiPart (Just $ Types.prompt llmReq) Nothing]]
+        -- Convert MCP tools to Gemini format
+        tools' = Types.mcpContext llmReq >>= \ctx ->
+          guard (not $ null $ Types.mcpTools ctx) >> Just (mcpToolsToGemini ctx)
 
-  if Types.streaming llmReq
-    then callGeminiStream apiKey' model' allContents tools'
-    else callGeminiNonStream apiKey' model' allContents tools'
+    bool (callGeminiNonStream apiKey' model' allContents tools')
+         (callGeminiStream apiKey' model' allContents tools')
+         (Types.streaming llmReq)
+  where
+    toGeminiContent msg = GeminiContent [GeminiPart (Just $ Types.messageContent msg) Nothing]
 
 -- | Build Gemini request
 buildGeminiRequest :: Text -> Text -> [GeminiContent] -> Maybe [GeminiTool] -> Bool -> IO Request
@@ -154,7 +157,7 @@ buildGeminiRequest apiKey' model' contents' tools' stream' = do
         { contents = contents'
         , tools = tools'
         }
-      endpoint = if stream' then ":streamGenerateContent?alt=sse" else ":generateContent"
+      endpoint = bool ":generateContent" ":streamGenerateContent?alt=sse" stream'
       url = "POST https://generativelanguage.googleapis.com/v1beta/models/"
             <> T.unpack model' <> endpoint
   request' <- parseRequest url
@@ -174,7 +177,7 @@ callGeminiNonStream apiKey' model' contents' tools' = do
       LBS.hPutStr stderr body
       TIO.hPutStrLn stderr ""
     case eitherDecode body of
-      Left err -> return $ Left $ ParseError $ err ++ " (status: " ++ show statusCode ++ ")"
+      Left err -> return $ Left $ ParseError $ T.pack $ err ++ " (status: " ++ show statusCode ++ ")"
       Right geminiResp ->
         case candidates geminiResp of
           [] -> return $ Left $ APIError "No response from Gemini"
@@ -183,7 +186,7 @@ callGeminiNonStream apiKey' model' contents' tools' = do
             return $ Right $ LLMResponse textContent' toolCalls'
 
   case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
+    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
     Right res -> return res
   where
     extractContent :: [GeminiPart] -> (Text, Maybe [Types.ToolCall])
@@ -217,7 +220,7 @@ callGeminiStream apiKey' model' contents' tools' = do
       readIORef toolCallsRef
 
   case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
+    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
     Right toolCalls' -> return $ Right $ LLMResponse "" toolCalls'
   where
     extractData line

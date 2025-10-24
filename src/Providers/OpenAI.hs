@@ -4,9 +4,11 @@
 module Providers.OpenAI (openAIProvider) where
 
 import Control.Exception (try, SomeException)
-import Control.Monad (unless, when)
+import Control.Monad (unless, when, guard)
+import Data.Foldable (forM_)
 import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, eitherDecode)
-import qualified Data.Maybe
+import Data.Bool (bool)
+import Data.Maybe (fromMaybe)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Conduit ((.|), runConduit)
@@ -162,20 +164,22 @@ openAIProvider = LLMProvider
   }
 
 callOpenAI :: LLMRequest -> IO (Either LLMError LLMResponse)
-callOpenAI llmReq = do
-  let apiKey' = Data.Maybe.fromMaybe (error "OpenAI API key is required") (Types.apiKey llmReq)
-      model' = Data.Maybe.fromMaybe "gpt-4o-mini" (Types.model llmReq)
-      -- Build messages from history + current prompt
-      historyMessages = map (\msg -> OpenAIMessage (Types.role msg) (Just $ Types.messageContent msg) Nothing) (Types.history llmReq)
-      allMessages = historyMessages ++ [OpenAIMessage "user" (Just $ Types.prompt llmReq) Nothing]
-      -- Convert MCP tools to OpenAI format
-      tools' = case Types.mcpContext llmReq of
-        Nothing -> Nothing
-        Just ctx -> if null (Types.mcpTools ctx) then Nothing else Just $ mcpToolsToOpenAI ctx
+callOpenAI llmReq = case Types.apiKey llmReq of
+  Nothing -> return $ Left $ ConfigError "OpenAI API key is required"
+  Just apiKey' -> do
+    let model' = fromMaybe "gpt-4o-mini" (Types.model llmReq)
+        -- Build messages from history + current prompt
+        historyMessages = map toOpenAIMessage (Types.history llmReq)
+        allMessages = historyMessages ++ [OpenAIMessage "user" (Just $ Types.prompt llmReq) Nothing]
+        -- Convert MCP tools to OpenAI format
+        tools' = Types.mcpContext llmReq >>= \ctx ->
+          guard (not $ null $ Types.mcpTools ctx) >> Just (mcpToolsToOpenAI ctx)
 
-  if Types.streaming llmReq
-    then callOpenAIStream apiKey' model' allMessages tools'
-    else callOpenAINonStream apiKey' model' allMessages tools'
+    bool (callOpenAINonStream apiKey' model' allMessages tools')
+         (callOpenAIStream apiKey' model' allMessages tools')
+         (Types.streaming llmReq)
+  where
+    toOpenAIMessage msg = OpenAIMessage (Types.role msg) (Just $ Types.messageContent msg) Nothing
 
 -- | Build OpenAI request
 buildOpenAIRequest :: Text -> Text -> [OpenAIMessage] -> Maybe [OpenAITool] -> Bool -> IO Request
@@ -197,18 +201,18 @@ callOpenAINonStream apiKey' model' messages' tools' = do
     response <- httpLBS request
     let body = getResponseBody response
     case eitherDecode body of
-      Left err -> return $ Left $ ParseError err
+      Left err -> return $ Left $ ParseError $ T.pack err
       Right openAIResp ->
         case choices openAIResp of
           [] -> return $ Left $ APIError "No response from OpenAI"
           (choice:_) ->
             let msg = message choice
-                content' = Data.Maybe.fromMaybe "" (messageContent msg)
-                toolCalls' = fmap (map convertToolCall) (Providers.OpenAI.toolCalls msg)
+                content' = fromMaybe "" (messageContent msg)
+                toolCalls' = (fmap . fmap) convertToolCall (Providers.OpenAI.toolCalls msg)
             in return $ Right $ LLMResponse content' toolCalls'
 
   case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
+    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
     Right res -> return res
   where
     convertToolCall tc = Types.ToolCall
@@ -229,7 +233,7 @@ callOpenAIStream apiKey' model' messages' tools' = do
       return ()
 
   case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError (show e)
+    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
     Right () -> return $ Right $ LLMResponse "" Nothing
   where
     extractData line
@@ -241,19 +245,25 @@ processChunk firstChunkRef chunk
   | chunk == "[DONE]" = return ()
   | BS.null chunk = return ()
   | otherwise = case eitherDecode (LBS.fromStrict chunk) of
-      Right (streamResp :: OpenAIStreamResponse) ->
-        case streamChoices streamResp of
-          (choice:_) -> case deltaContent (delta choice) of
-            Just txt -> do
-              -- Stop spinner on first chunk with content
-              unless (T.null txt) $ do
-                isFirst <- readIORef firstChunkRef
-                when isFirst $ do
-                  writeIORef firstChunkRef False
-                  stopSpinner
-              -- Output the content immediately
-              TIO.putStr txt
-              hFlush stdout
-            Nothing -> return ()
-          [] -> return ()
-      Left _ -> return ()  -- Silently ignore parse errors
+      Right (streamResp :: OpenAIStreamResponse) -> handleStreamResponse firstChunkRef streamResp
+      Left _ -> return () -- Silently ignore parse errors
+
+handleStreamResponse :: IORef Bool -> OpenAIStreamResponse -> IO ()
+handleStreamResponse firstChunkRef streamResp =
+  case streamChoices streamResp of
+    (choice:_) -> handleStreamChoice firstChunkRef choice
+    [] -> return ()
+
+handleStreamChoice :: IORef Bool -> OpenAIStreamChoice -> IO ()
+handleStreamChoice firstChunkRef choice =
+  forM_ (deltaContent (delta choice)) (outputStreamText firstChunkRef)
+
+outputStreamText :: IORef Bool -> Text -> IO ()
+outputStreamText firstChunkRef txt =
+  unless (T.null txt) $ do
+    isFirst <- readIORef firstChunkRef
+    when isFirst $ do
+      writeIORef firstChunkRef False
+      stopSpinner
+    TIO.putStr txt
+    hFlush stdout
