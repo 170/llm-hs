@@ -261,7 +261,7 @@ llm-hs now supports MCP servers, which allow LLMs to access external tools and r
 ### What is MCP?
 
 MCP (Model Context Protocol) is a standardized protocol for connecting AI assistants to external data sources and tools. MCP servers can provide:
-- **Tools**: Functions that the LLM can describe in its responses
+- **Tools**: Functions that the LLM can call to perform actions (e.g., web search, file operations)
 - **Resources**: Access to files, databases, APIs, and other data sources
 
 ### Configuring MCP Servers
@@ -303,8 +303,10 @@ When you start llm-hs with MCP servers configured:
 1. **Startup**: llm-hs automatically starts all configured MCP servers
 2. **Discovery**: The tool queries each server for available tools and resources
 3. **Context**: Available tools are added to the LLM's system prompt
-4. **Interaction**: The LLM can describe tools in its responses based on your queries
-5. **Cleanup**: MCP servers are automatically stopped when the session ends
+4. **Tool Calling**: When appropriate, the LLM can call tools to perform actions (e.g., search the web, read files)
+5. **Execution**: llm-hs executes the tool calls via MCP and returns the results to the LLM
+6. **Response**: The LLM uses the tool results to generate a final response
+7. **Cleanup**: MCP servers are automatically stopped when the session ends
 
 ### Example MCP Servers
 
@@ -352,14 +354,14 @@ MCP Tools: 5 tools available
 Type your message and press Enter. Type 'exit' or 'quit' to end.
 ```
 
-The LLM can then reference and describe these tools when responding to your queries.
+The LLM can automatically call these tools when needed to answer your queries.
 
 ### Notes
 
 - MCP servers run as child processes and communicate via stdio (JSON-RPC)
 - All MCP servers are automatically stopped when llm-hs exits
 - If an MCP server fails to start, llm-hs will display an error but continue running
-- Currently, the LLM can see and describe tools but cannot directly execute them (this is a safety feature)
+- The LLM can discover available tools and execute them automatically when needed
 
 ## Development
 

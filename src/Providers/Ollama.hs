@@ -7,7 +7,7 @@ import Control.Exception (try, SomeException)
 import Control.Monad (unless, when, guard)
 import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, eitherDecode, encode)
 import Data.Bool (bool)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as LBS
 import Data.Conduit ((.|), runConduit)
@@ -20,7 +20,7 @@ import qualified Data.Text.IO as TIO
 import qualified Data.Text.Encoding as TE
 import System.IO (hFlush, stdout)
 import Network.HTTP.Simple
-import Network.HTTP.Conduit (responseBody)
+import Network.HTTP.Conduit (responseBody, responseTimeoutMicro)
 import qualified Core.Types as Types
 import Core.Types (LLMRequest, LLMResponse(..), LLMError(..), LLMProvider(..))
 import UI.Spinner (stopSpinner)
@@ -158,11 +158,13 @@ callOllama llmReq = do
       -- Convert MCP tools to Ollama format
       tools' = Types.mcpContext llmReq >>= \ctx ->
         guard (not $ null $ Types.mcpTools ctx) >> Just (mcpToolsToOllama ctx)
+      -- Check if we have conversation history (indicates potential tool usage)
+      hasHistory = not $ null $ Types.history llmReq
 
-  -- Use chat endpoint if tools are present, otherwise use generate
-  maybe (callOllamaGenerate baseUrl' model' llmReq)
-        (callOllamaChat baseUrl' model' llmReq)
-        tools'
+  -- Use chat endpoint if tools are present OR if we have history (tool follow-up)
+  if hasHistory || isJust tools'
+    then callOllamaChat baseUrl' model' llmReq (fromMaybe [] tools')
+    else callOllamaGenerate baseUrl' model' llmReq
 
 -- Call Ollama chat endpoint (with tool support)
 callOllamaChat :: Text -> Text -> LLMRequest -> [OllamaTool] -> IO (Either LLMError LLMResponse)
@@ -183,10 +185,11 @@ callOllamaChatNonStream baseUrl' model' messages' tools' = do
           { chatModel = model'
           , chatMessages = messages'
           , chatStream = False
-          , chatTools = Just tools'
+          , chatTools = if null tools' then Nothing else Just tools'
           }
     request' <- parseRequest $ "POST http://" <> T.unpack baseUrl' <> "/api/chat"
-    let request = setRequestBodyJSON requestBody request'
+    let request = setRequestBodyJSON requestBody
+                $ setRequestResponseTimeout (responseTimeoutMicro 300000000) request'  -- 5 minutes timeout
     response <- httpLBS request
     let body = getResponseBody response
     case eitherDecode body of
@@ -194,10 +197,15 @@ callOllamaChatNonStream baseUrl' model' messages' tools' = do
       Right chatResp -> do
         let msg = chatRespMessage chatResp
             content' = respMsgContent msg
+            thinking' = respMsgThinking msg
+            -- Use thinking as content if content is empty
+            finalContent = if T.null content'
+                          then fromMaybe "" thinking'
+                          else content'
             toolCalls' = case respMsgToolCalls msg of
               Nothing -> Nothing
               Just tcs -> Just $ zipWith convertToolCall [1..] tcs
-        return $ Right $ LLMResponse content' toolCalls'
+        return $ Right $ LLMResponse finalContent toolCalls'
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
@@ -216,10 +224,11 @@ callOllamaChatStream baseUrl' model' messages' tools' = do
           { chatModel = model'
           , chatMessages = messages'
           , chatStream = True
-          , chatTools = Just tools'
+          , chatTools = if null tools' then Nothing else Just tools'
           }
     request' <- parseRequest $ "POST http://" <> T.unpack baseUrl' <> "/api/chat"
-    let request = setRequestBodyJSON requestBody request'
+    let request = setRequestBodyJSON requestBody
+                $ setRequestResponseTimeout (responseTimeoutMicro 300000000) request'  -- 5 minutes timeout
     withResponse request $ \resp -> do
       firstChunkRef <- newIORef True
       toolCallsRef <- newIORef Nothing

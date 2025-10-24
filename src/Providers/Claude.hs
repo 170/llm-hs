@@ -15,7 +15,9 @@ import qualified Data.ByteString.Lazy as LBS
 import Data.Conduit ((.|), runConduit)
 import qualified Data.Conduit.Combinators as CC
 import qualified Data.Conduit.List as CL
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -99,24 +101,56 @@ instance FromJSON ClaudeResponse where
   parseJSON = withObject "ClaudeResponse" $ \v ->
     ClaudeResponse <$> v .: "content"
 
+-- Streaming accumulator for tool calls
+data ToolCallAccumulator = ToolCallAccumulator
+  { tcaId :: Text
+  , tcaName :: Text
+  , tcaInputJson :: Text
+  } deriving (Show)
+
 -- Streaming types
 data ClaudeStreamDelta = ClaudeStreamDelta
   { deltaType :: Text
   , deltaText :: Maybe Text
+  , deltaPartialJson :: Maybe Text
   } deriving (Show)
 
 instance FromJSON ClaudeStreamDelta where
   parseJSON = withObject "ClaudeStreamDelta" $ \v ->
-    ClaudeStreamDelta <$> v .: "type" <*> v .:? "text"
+    ClaudeStreamDelta
+      <$> v .: "type"
+      <*> v .:? "text"
+      <*> v .:? "partial_json"
+
+data ClaudeStreamContentBlock = ClaudeStreamContentBlock
+  { streamBlockType :: Text
+  , streamBlockId :: Maybe Text
+  , streamBlockName :: Maybe Text
+  , streamBlockInput :: Maybe Value
+  } deriving (Show)
+
+instance FromJSON ClaudeStreamContentBlock where
+  parseJSON = withObject "ClaudeStreamContentBlock" $ \v ->
+    ClaudeStreamContentBlock
+      <$> v .: "type"
+      <*> v .:? "id"
+      <*> v .:? "name"
+      <*> v .:? "input"
 
 data ClaudeStreamEvent = ClaudeStreamEvent
   { eventType :: Text
   , eventDelta :: Maybe ClaudeStreamDelta
+  , eventContentBlock :: Maybe ClaudeStreamContentBlock
+  , eventIndex :: Maybe Int
   } deriving (Show)
 
 instance FromJSON ClaudeStreamEvent where
   parseJSON = withObject "ClaudeStreamEvent" $ \v ->
-    ClaudeStreamEvent <$> v .: "type" <*> v .:? "delta"
+    ClaudeStreamEvent
+      <$> v .: "type"
+      <*> v .:? "delta"
+      <*> v .:? "content_block"
+      <*> v .:? "index"
 
 -- | Create Claude provider
 claudeProvider :: LLMProvider
@@ -229,32 +263,44 @@ callClaudeStream apiKey' model' messages' systemPrompt' tools' = do
     request <- buildClaudeRequest apiKey' model' messages' systemPrompt' tools' True
     withResponse request $ \response -> do
       firstChunkRef <- newIORef True
+      toolCallAccRef <- newIORef (Map.empty :: Map Int ToolCallAccumulator)
+      currentIndexRef <- newIORef Nothing
       runConduit $ responseBody response
         .| CC.linesUnboundedAscii
         .| CL.mapMaybe extractData
-        .| CL.mapM_ (processClaudeChunk firstChunkRef)
-      return ()
+        .| CL.mapM_ (processClaudeChunk firstChunkRef toolCallAccRef currentIndexRef)
+      accMap <- readIORef toolCallAccRef
+      let finalToolCalls = convertAccMapToToolCalls accMap
+      return finalToolCalls
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
-    Right () -> return $ Right $ LLMResponse "" Nothing
+    Right toolCalls' -> return $ Right $ LLMResponse "" toolCalls'
   where
     extractData line
       | "data: " `BS.isPrefixOf` line = Just $ BS.drop 6 line
       | otherwise = Nothing
 
-processClaudeChunk :: IORef Bool -> BS.ByteString -> IO ()
-processClaudeChunk firstChunkRef chunk
+convertAccMapToToolCalls :: Map Int ToolCallAccumulator -> Maybe [Types.ToolCall]
+convertAccMapToToolCalls accMap
+  | Map.null accMap = Nothing
+  | otherwise = Just $ map convertAcc $ Map.elems accMap
+  where
+    convertAcc acc = Types.ToolCall (tcaId acc) (tcaName acc) (tcaInputJson acc)
+
+processClaudeChunk :: IORef Bool -> IORef (Map Int ToolCallAccumulator) -> IORef (Maybe Int) -> BS.ByteString -> IO ()
+processClaudeChunk firstChunkRef toolCallAccRef currentIndexRef chunk
   | BS.null chunk = return ()
   | otherwise = case eitherDecode (LBS.fromStrict chunk) of
-      Right (event :: ClaudeStreamEvent) -> handleClaudeStreamEvent firstChunkRef chunk event
+      Right (event :: ClaudeStreamEvent) -> handleClaudeStreamEvent firstChunkRef toolCallAccRef currentIndexRef chunk event
       Left _ -> return () -- Silently ignore parse errors
 
-handleClaudeStreamEvent :: IORef Bool -> BS.ByteString -> ClaudeStreamEvent -> IO ()
-handleClaudeStreamEvent firstChunkRef chunk event =
+handleClaudeStreamEvent :: IORef Bool -> IORef (Map Int ToolCallAccumulator) -> IORef (Maybe Int) -> BS.ByteString -> ClaudeStreamEvent -> IO ()
+handleClaudeStreamEvent firstChunkRef toolCallAccRef currentIndexRef chunk event =
   case eventType event of
     "error" -> printStreamError chunk
-    "content_block_delta" -> handleContentBlockDelta firstChunkRef event
+    "content_block_delta" -> handleContentBlockDelta firstChunkRef toolCallAccRef currentIndexRef event
+    "content_block_start" -> handleContentBlockStart toolCallAccRef currentIndexRef event
     _ -> return ()
 
 printStreamError :: BS.ByteString -> IO ()
@@ -263,13 +309,16 @@ printStreamError chunk = do
   LBS.hPutStr stderr (LBS.fromStrict chunk)
   TIO.hPutStrLn stderr ""
 
-handleContentBlockDelta :: IORef Bool -> ClaudeStreamEvent -> IO ()
-handleContentBlockDelta firstChunkRef event =
-  forM_ (eventDelta event) (handleDeltaText firstChunkRef)
-
-handleDeltaText :: IORef Bool -> ClaudeStreamDelta -> IO ()
-handleDeltaText firstChunkRef delta =
-  forM_ (deltaText delta) (outputDeltaText firstChunkRef)
+handleContentBlockDelta :: IORef Bool -> IORef (Map Int ToolCallAccumulator) -> IORef (Maybe Int) -> ClaudeStreamEvent -> IO ()
+handleContentBlockDelta firstChunkRef toolCallAccRef currentIndexRef event =
+  forM_ (eventDelta event) $ \delta -> do
+    -- Handle text delta
+    forM_ (deltaText delta) (outputDeltaText firstChunkRef)
+    -- Handle input_json delta for tool calls
+    forM_ (deltaPartialJson delta) $ \partialJson -> do
+      maybeIndex <- readIORef currentIndexRef
+      forM_ maybeIndex $ \idx ->
+        modifyIORef' toolCallAccRef $ Map.adjust (\acc -> acc { tcaInputJson = tcaInputJson acc <> partialJson }) idx
 
 outputDeltaText :: IORef Bool -> Text -> IO ()
 outputDeltaText firstChunkRef txt =
@@ -280,3 +329,16 @@ outputDeltaText firstChunkRef txt =
       stopSpinner
     TIO.putStr txt
     hFlush stdout
+
+handleContentBlockStart :: IORef (Map Int ToolCallAccumulator) -> IORef (Maybe Int) -> ClaudeStreamEvent -> IO ()
+handleContentBlockStart toolCallAccRef currentIndexRef event = do
+  -- Update current index
+  forM_ (eventIndex event) $ \idx -> writeIORef currentIndexRef (Just idx)
+
+  forM_ (eventContentBlock event) $ \block ->
+    when (streamBlockType block == "tool_use") $
+      case (streamBlockId block, streamBlockName block, eventIndex event) of
+        (Just toolId, Just toolName', Just idx) -> do
+          let acc = ToolCallAccumulator toolId toolName' ""
+          modifyIORef' toolCallAccRef $ Map.insert idx acc
+        _ -> return ()

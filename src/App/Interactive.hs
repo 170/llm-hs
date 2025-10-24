@@ -130,6 +130,15 @@ handleResponse opts apiKey' mcpClients mcpCtx colorMode useColor history' userIn
 
 handleToolCallResponse :: Options -> Maybe T.Text -> [MCPClient] -> Maybe MCPContext -> ColorMode -> Bool -> ConversationHistory -> T.Text -> LLMResponse -> [Types.ToolCall] -> InputT IO ()
 handleToolCallResponse opts apiKey' mcpClients mcpCtx colorMode useColor history' userInput response calls = do
+  handleToolCallResponseWithDepth opts apiKey' mcpClients mcpCtx colorMode useColor history' userInput response calls 0
+
+handleToolCallResponseWithDepth :: Options -> Maybe T.Text -> [MCPClient] -> Maybe MCPContext -> ColorMode -> Bool -> ConversationHistory -> T.Text -> LLMResponse -> [Types.ToolCall] -> Int -> InputT IO ()
+handleToolCallResponseWithDepth opts apiKey' mcpClients mcpCtx colorMode useColor history' userInput response calls depth = do
+  when (depth >= 5) $ do
+    errorText <- liftIO $ Color.errorColor colorMode "Error: Too many tool call iterations (max 5). Stopping."
+    liftIO $ TIO.hPutStrLn stderr errorText
+    conversationLoop opts apiKey' mcpClients mcpCtx colorMode useColor history'
+
   let assistantMsg = content response
   unless (T.null assistantMsg) $
     liftIO $ TIO.putStrLn assistantMsg
@@ -142,7 +151,27 @@ handleToolCallResponse opts apiKey' mcpClients mcpCtx colorMode useColor history
       updatedHistory = history' ++ [Message "user" userInput]
 
   result' <- liftIO $ executeToolResultRequest opts apiKey' updatedHistory toolResultText
-  handleToolResultResponse opts apiKey' mcpClients mcpCtx colorMode useColor updatedHistory result'
+  handleToolResultResponseWithDepth opts apiKey' mcpClients mcpCtx colorMode useColor updatedHistory depth result'
+
+handleToolResultResponseWithDepth :: Options -> Maybe T.Text -> [MCPClient] -> Maybe MCPContext -> ColorMode -> Bool -> ConversationHistory -> Int -> Either LLMError LLMResponse -> InputT IO ()
+handleToolResultResponseWithDepth opts apiKey' mcpClients mcpCtx colorMode useColor updatedHistory _ (Left err) = do
+  errorText <- liftIO $ Color.errorColor colorMode $ "Error: " <> T.pack (show err)
+  liftIO $ TIO.hPutStrLn stderr errorText
+  conversationLoop opts apiKey' mcpClients mcpCtx colorMode useColor updatedHistory
+handleToolResultResponseWithDepth opts apiKey' mcpClients mcpCtx colorMode useColor updatedHistory depth (Right response') = do
+  let assistantContent = content response'
+  -- Check if response has tool calls again
+  case Types.toolCalls response' of
+    Just calls | not (null calls) ->
+      -- Execute these tool calls too (recursive call)
+      handleToolCallResponseWithDepth opts apiKey' mcpClients mcpCtx colorMode useColor updatedHistory "" response' calls (depth + 1)
+    _ -> do
+      -- Only print newline if streaming was disabled (content is not empty)
+      unless (Data.Maybe.fromMaybe False (streamOpt opts)) $
+        liftIO $ TIO.putStrLn ""
+      liftIO $ TIO.putStrLn ""
+      let finalHistory = buildFinalHistory updatedHistory assistantContent
+      conversationLoop opts apiKey' mcpClients mcpCtx colorMode useColor finalHistory
 
 buildToolResultText :: [Types.ToolCall] -> [T.Text] -> T.Text
 buildToolResultText calls results =
@@ -154,11 +183,11 @@ buildToolResultText calls results =
 executeToolResultRequest :: Options -> Maybe T.Text -> ConversationHistory -> T.Text -> IO (Either LLMError LLMResponse)
 executeToolResultRequest opts apiKey' history' toolResultText = do
   let request = LLMRequest
-        { prompt = "Based on the tool results:\n" <> toolResultText
+        { prompt = "Based on the tool results below, please provide a final answer to the user's question. Do not call any more tools.\n\n" <> toolResultText
         , model = modelName opts
         , apiKey = apiKey'
         , baseUrl = baseUrlOpt opts
-        , streaming = True
+        , streaming = Data.Maybe.fromMaybe False (streamOpt opts)  -- Use user's streaming preference
         , history = history'
         , mcpContext = Nothing
         }
@@ -166,17 +195,6 @@ executeToolResultRequest opts apiKey' history' toolResultText = do
   result <- callProvider opts request
   stopSpinner
   return result
-
-handleToolResultResponse :: Options -> Maybe T.Text -> [MCPClient] -> Maybe MCPContext -> ColorMode -> Bool -> ConversationHistory -> Either LLMError LLMResponse -> InputT IO ()
-handleToolResultResponse opts apiKey' mcpClients mcpCtx colorMode useColor updatedHistory (Left err) = do
-  errorText <- liftIO $ Color.errorColor colorMode $ "Error: " <> T.pack (show err)
-  liftIO $ TIO.hPutStrLn stderr errorText
-  conversationLoop opts apiKey' mcpClients mcpCtx colorMode useColor updatedHistory
-handleToolResultResponse opts apiKey' mcpClients mcpCtx colorMode useColor updatedHistory (Right response') = do
-  liftIO $ TIO.putStrLn ""
-  let assistantContent = content response'
-      finalHistory = buildFinalHistory updatedHistory assistantContent
-  conversationLoop opts apiKey' mcpClients mcpCtx colorMode useColor finalHistory
 
 buildFinalHistory :: ConversationHistory -> T.Text -> ConversationHistory
 buildFinalHistory hist assistantContent =

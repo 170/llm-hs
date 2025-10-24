@@ -6,7 +6,10 @@ module Providers.OpenAI (openAIProvider) where
 import Control.Exception (try, SomeException)
 import Control.Monad (unless, when, guard)
 import Data.Foldable (forM_)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Aeson (FromJSON(..), ToJSON(..), Value, object, (.=), (.:), (.:?), withObject, eitherDecode)
+import Control.Applicative ((<|>))
 import Data.Bool (bool)
 import Data.Maybe (fromMaybe)
 import qualified Data.ByteString as BS
@@ -14,7 +17,7 @@ import qualified Data.ByteString.Lazy as LBS
 import Data.Conduit ((.|), runConduit)
 import qualified Data.Conduit.Combinators as CC
 import qualified Data.Conduit.List as CL
-import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -27,7 +30,8 @@ import Core.Types (LLMRequest, LLMResponse(..), LLMError(..), LLMProvider(..))
 import UI.Spinner (stopSpinner)
 
 data OpenAIToolCall = OpenAIToolCall
-  { toolCallId :: Text
+  { toolCallIndex :: Maybe Int
+  , toolCallId :: Text
   , toolCallType :: Text
   , toolCallFunction :: OpenAIToolCallFunction
   } deriving (Show)
@@ -38,14 +42,15 @@ data OpenAIToolCallFunction = OpenAIToolCallFunction
   } deriving (Show)
 
 instance ToJSON OpenAIToolCall where
-  toJSON (OpenAIToolCall tid ttype func) =
+  toJSON (OpenAIToolCall _ tid ttype func) =
     object ["id" .= tid, "type" .= ttype, "function" .= func]
 
 instance FromJSON OpenAIToolCall where
   parseJSON = withObject "OpenAIToolCall" $ \v ->
     OpenAIToolCall
-      <$> v .: "id"
-      <*> v .: "type"
+      <$> v .:? "index"
+      <*> (v .: "id" <|> pure "")
+      <*> (v .: "type" <|> pure "function")
       <*> v .: "function"
 
 instance ToJSON OpenAIToolCallFunction where
@@ -55,8 +60,8 @@ instance ToJSON OpenAIToolCallFunction where
 instance FromJSON OpenAIToolCallFunction where
   parseJSON = withObject "OpenAIToolCallFunction" $ \v ->
     OpenAIToolCallFunction
-      <$> v .: "name"
-      <*> v .: "arguments"
+      <$> (v .: "name" <|> pure "")
+      <*> (v .: "arguments" <|> pure "")
 
 data OpenAIMessage = OpenAIMessage
   { role :: Text
@@ -126,13 +131,16 @@ instance FromJSON OpenAIResponse where
     OpenAIResponse <$> v .: "choices"
 
 -- Streaming types
-newtype OpenAIDelta = OpenAIDelta
+data OpenAIDelta = OpenAIDelta
   { deltaContent :: Maybe Text
+  , deltaToolCalls :: Maybe [OpenAIToolCall]
   } deriving (Show)
 
 instance FromJSON OpenAIDelta where
   parseJSON = withObject "OpenAIDelta" $ \v ->
-    OpenAIDelta <$> v .:? "content"
+    OpenAIDelta
+      <$> v .:? "content"
+      <*> v .:? "tool_calls"
 
 newtype OpenAIStreamChoice = OpenAIStreamChoice
   { delta :: OpenAIDelta
@@ -149,6 +157,13 @@ newtype OpenAIStreamResponse = OpenAIStreamResponse
 instance FromJSON OpenAIStreamResponse where
   parseJSON = withObject "OpenAIStreamResponse" $ \v ->
     OpenAIStreamResponse <$> v .: "choices"
+
+-- Accumulator for streaming tool calls
+data ToolCallAccumulator = ToolCallAccumulator
+  { accId :: Text
+  , accName :: Text
+  , accArguments :: Text
+  } deriving (Show)
 
 -- Convert MCP tools to OpenAI format
 mcpToolsToOpenAI :: Types.MCPContext -> [OpenAITool]
@@ -226,37 +241,60 @@ callOpenAIStream apiKey' model' messages' tools' = do
     request <- buildOpenAIRequest apiKey' model' messages' tools' True
     withResponse request $ \response -> do
       firstChunkRef <- newIORef True
+      toolCallsAccRef <- newIORef (Map.empty :: Map Int ToolCallAccumulator)
       runConduit $ responseBody response
         .| CC.linesUnboundedAscii
         .| CL.mapMaybe extractData
-        .| CL.mapM_ (processChunk firstChunkRef)
-      return ()
+        .| CL.mapM_ (processChunk firstChunkRef toolCallsAccRef)
+      accMap <- readIORef toolCallsAccRef
+      return $ convertAccumulatorMapToToolCalls accMap
 
   case result of
     Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
-    Right () -> return $ Right $ LLMResponse "" Nothing
+    Right toolCalls' -> return $ Right $ LLMResponse "" toolCalls'
   where
     extractData line
       | "data: " `BS.isPrefixOf` line = Just $ BS.drop 6 line
       | otherwise = Nothing
 
-processChunk :: IORef Bool -> BS.ByteString -> IO ()
-processChunk firstChunkRef chunk
+convertAccumulatorMapToToolCalls :: Map Int ToolCallAccumulator -> Maybe [Types.ToolCall]
+convertAccumulatorMapToToolCalls accMap
+  | Map.null accMap = Nothing
+  | otherwise = Just $ map convertAcc $ Map.elems accMap
+  where
+    convertAcc acc = Types.ToolCall (accId acc) (accName acc) (accArguments acc)
+
+processChunk :: IORef Bool -> IORef (Map Int ToolCallAccumulator) -> BS.ByteString -> IO ()
+processChunk firstChunkRef toolCallsAccRef chunk
   | chunk == "[DONE]" = return ()
   | BS.null chunk = return ()
   | otherwise = case eitherDecode (LBS.fromStrict chunk) of
-      Right (streamResp :: OpenAIStreamResponse) -> handleStreamResponse firstChunkRef streamResp
+      Right (streamResp :: OpenAIStreamResponse) -> handleStreamResponse firstChunkRef toolCallsAccRef streamResp
       Left _ -> return () -- Silently ignore parse errors
 
-handleStreamResponse :: IORef Bool -> OpenAIStreamResponse -> IO ()
-handleStreamResponse firstChunkRef streamResp =
+handleStreamResponse :: IORef Bool -> IORef (Map Int ToolCallAccumulator) -> OpenAIStreamResponse -> IO ()
+handleStreamResponse firstChunkRef toolCallsAccRef streamResp =
   case streamChoices streamResp of
-    (choice:_) -> handleStreamChoice firstChunkRef choice
+    (choice:_) -> handleStreamChoice firstChunkRef toolCallsAccRef choice
     [] -> return ()
 
-handleStreamChoice :: IORef Bool -> OpenAIStreamChoice -> IO ()
-handleStreamChoice firstChunkRef choice =
+handleStreamChoice :: IORef Bool -> IORef (Map Int ToolCallAccumulator) -> OpenAIStreamChoice -> IO ()
+handleStreamChoice firstChunkRef toolCallsAccRef choice = do
   forM_ (deltaContent (delta choice)) (outputStreamText firstChunkRef)
+  -- Accumulate tool calls if present
+  forM_ (deltaToolCalls (delta choice)) $ \tcs -> do
+    mapM_ (accumulateToolCall toolCallsAccRef) tcs
+
+accumulateToolCall :: IORef (Map Int ToolCallAccumulator) -> OpenAIToolCall -> IO ()
+accumulateToolCall accRef tc = do
+  let index = fromMaybe 0 (toolCallIndex tc)
+  modifyIORef' accRef $ \accMap ->
+    let currentAcc = Map.findWithDefault (ToolCallAccumulator "" "" "") index accMap
+        newId = if T.null (toolCallId tc) then accId currentAcc else toolCallId tc
+        func = toolCallFunction tc
+        newName = if T.null (toolCallFunctionName func) then accName currentAcc else toolCallFunctionName func
+        newArgs = accArguments currentAcc <> toolCallFunctionArguments func
+    in Map.insert index (ToolCallAccumulator newId newName newArgs) accMap
 
 outputStreamText :: IORef Bool -> Text -> IO ()
 outputStreamText firstChunkRef txt =
