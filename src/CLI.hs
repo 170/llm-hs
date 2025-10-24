@@ -73,11 +73,11 @@ optionsParser = Options
       <> metavar "BASE_URL"
       <> help "Base URL for the provider (mainly for Ollama, default: localhost)"
       ))
-  <*> optional (switch
+  <*> flag Nothing (Just True)
       (  long "stream"
       <> short 's'
       <> help "Enable streaming output (real-time)"
-      ))
+      )
   <*> colorModeParser
   <*> optional (option (T.pack <$> str)
       (  long "system"
