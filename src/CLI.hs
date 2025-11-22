@@ -3,15 +3,12 @@
 module CLI
   ( Options(..)
   , parseOptions
-  , mergeConfigWithOptions
   ) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Maybe (fromMaybe)
 import Options.Applicative
 import Core.Types (Provider(..), ColorMode(..))
-import Config (Config(..))
 
 data Options = Options
   { provider :: Maybe Provider
@@ -93,51 +90,3 @@ parseOptions = execParser opts
       <> progDesc "Call LLM APIs with input from stdin"
       <> header "llm-hs - A CLI tool for calling various LLM APIs"
       )
-
--- Merge configuration file settings with command-line options
--- Command-line options take precedence over config file
-mergeConfigWithOptions :: Maybe Config -> Options -> Either String Options
-mergeConfigWithOptions Nothing opts =
-  case provider opts of
-    Nothing -> Left "No provider specified. Please specify via --provider or in ~/.llm-hs.json"
-    Just _ -> Right $ opts
-      { streamOpt = Just (fromMaybe False (streamOpt opts))
-      , colorOpt = Just (fromMaybe AutoColor (colorOpt opts))
-      , systemPrompt = systemPrompt opts
-      }
-mergeConfigWithOptions (Just config) opts =
-  let mergedProvider = case provider opts of
-        Just p -> Just p
-        Nothing -> defaultProvider config
-      mergedModel = case modelName opts of
-        Just m -> Just m
-        Nothing -> defaultModel config
-      -- Select the appropriate API key based on the provider
-      getConfigApiKey p = case p of
-        OpenAI -> openaiApiKey config
-        Claude -> claudeApiKey config
-        Gemini -> geminiApiKey config
-        Ollama -> Nothing  -- Ollama doesn't require an API key
-      mergedApiKey = case apiKeyOpt opts of
-        Just k -> Just k
-        Nothing -> mergedProvider >>= getConfigApiKey
-      mergedBaseUrl = case baseUrlOpt opts of
-        Just u -> Just u
-        Nothing -> defaultBaseUrl config
-      mergedStream = case streamOpt opts of
-        Just s -> Just s
-        Nothing -> defaultStream config
-      mergedColor = case colorOpt opts of
-        Just c -> Just c
-        Nothing -> defaultColor config
-  in case mergedProvider of
-       Nothing -> Left "No provider specified. Please specify via --provider or in ~/.llm-hs.json"
-       Just p -> Right $ Options
-         { provider = Just p
-         , modelName = mergedModel
-         , apiKeyOpt = mergedApiKey
-         , baseUrlOpt = mergedBaseUrl
-         , streamOpt = Just (fromMaybe False mergedStream)
-         , colorOpt = Just (fromMaybe AutoColor mergedColor)
-         , systemPrompt = systemPrompt opts
-         }

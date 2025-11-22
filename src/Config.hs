@@ -2,107 +2,24 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Config
-  ( Config(..)
-  , MCPServer(..)
+  ( module Config.Types
   , loadConfig
   , getConfigPath
+  , applyConfigToOptions
   ) where
 
-import Data.Aeson (FromJSON(..), ToJSON(..), object, (.=), (.:), (.:?), (.!=), withObject, eitherDecode)
 import qualified Data.ByteString.Lazy as LBS
-import Data.Text (Text)
-import Data.Map.Strict (Map)
+import Data.Aeson (eitherDecode)
 import System.Directory (doesFileExist, getHomeDirectory)
 import System.FilePath ((</>))
 import Control.Exception (try, SomeException)
+
+import Control.Applicative ((<|>))
+import qualified Data.Text
+
+import Config.Types
+import CLI (Options(..))
 import Core.Types (Provider(..), ColorMode(..))
-
--- MCP Server configuration
-data MCPServer = MCPServer
-  { serverName :: Text
-  , serverCommand :: Text
-  , serverArgs :: [Text]
-  , serverEnv :: Maybe (Map Text Text)
-  } deriving (Show)
-
-instance FromJSON MCPServer where
-  parseJSON = withObject "MCPServer" $ \v ->
-    MCPServer
-      <$> v .: "name"
-      <*> v .: "command"
-      <*> v .:? "args" .!= []
-      <*> v .:? "env"
-
-instance ToJSON MCPServer where
-  toJSON (MCPServer name cmd args env) =
-    object ["name" .= name, "command" .= cmd, "args" .= args, "env" .= env]
-
--- Main configuration
-data Config = Config
-  { defaultProvider :: Maybe Provider
-  , defaultModel :: Maybe Text
-  , openaiApiKey :: Maybe Text
-  , claudeApiKey :: Maybe Text
-  , geminiApiKey :: Maybe Text
-  , defaultBaseUrl :: Maybe Text
-  , defaultStream :: Maybe Bool
-  , defaultColor :: Maybe ColorMode
-  , mcpServers :: [MCPServer]
-  } deriving (Show)
-
-instance FromJSON Config where
-  parseJSON = withObject "Config" $ \v -> do
-    provider <- v .:? "provider"
-    let parsedProvider = provider >>= parseProvider
-    color <- v .:? "color"
-    let parsedColor = color >>= parseColor
-    Config parsedProvider
-      <$> v .:? "model"
-      <*> v .:? "openaiApiKey"
-      <*> v .:? "claudeApiKey"
-      <*> v .:? "geminiApiKey"
-      <*> v .:? "baseUrl"
-      <*> v .:? "stream"
-      <*> pure parsedColor
-      <*> v .:? "mcpServers" .!= []
-    where
-      parseProvider :: Text -> Maybe Provider
-      parseProvider "openai" = Just OpenAI
-      parseProvider "claude" = Just Claude
-      parseProvider "ollama" = Just Ollama
-      parseProvider "gemini" = Just Gemini
-      parseProvider _ = Nothing
-
-      parseColor :: Text -> Maybe ColorMode
-      parseColor "auto" = Just AutoColor
-      parseColor "always" = Just AlwaysColor
-      parseColor "never" = Just NoColor
-      parseColor _ = Nothing
-
-instance ToJSON Config where
-  toJSON (Config prov model openaiKey claudeKey geminiKey baseUrl stream color servers) =
-    object
-      [ "provider" .= fmap providerToText prov
-      , "model" .= model
-      , "openaiApiKey" .= openaiKey
-      , "claudeApiKey" .= claudeKey
-      , "geminiApiKey" .= geminiKey
-      , "baseUrl" .= baseUrl
-      , "stream" .= stream
-      , "color" .= fmap colorToText color
-      , "mcpServers" .= servers
-      ]
-    where
-      providerToText :: Provider -> Text
-      providerToText OpenAI = "openai"
-      providerToText Claude = "claude"
-      providerToText Ollama = "ollama"
-      providerToText Gemini = "gemini"
-
-      colorToText :: ColorMode -> Text
-      colorToText AutoColor = "auto"
-      colorToText AlwaysColor = "always"
-      colorToText NoColor = "never"
 
 -- Get the configuration file path
 getConfigPath :: IO FilePath
@@ -125,3 +42,37 @@ loadConfig = do
           case eitherDecode content of
             Left _ -> return Nothing
             Right config -> return $ Just config
+
+-- Merge configuration file settings with command-line options
+-- Command-line options take precedence over config file
+applyConfigToOptions :: Maybe Config -> Options -> Either String Options
+applyConfigToOptions Nothing opts =
+  case provider opts of
+    Nothing -> Left "No provider specified. Please specify via --provider or in ~/.llm-hs.json"
+    Just _ -> Right $ opts
+      { streamOpt = streamOpt opts <|> Just False
+      , colorOpt = colorOpt opts <|> Just AutoColor
+      }
+applyConfigToOptions (Just config) opts =
+  let mergedProvider = provider opts <|> defaultProvider config
+      mergedModel = modelName opts <|> defaultModel config
+      mergedApiKey = apiKeyOpt opts <|> (mergedProvider >>= getApiKeyFromConfig config)
+      mergedBaseUrl = baseUrlOpt opts <|> defaultBaseUrl config
+      mergedStream = streamOpt opts <|> defaultStream config <|> Just False
+      mergedColor = colorOpt opts <|> defaultColor config <|> Just AutoColor
+  in case mergedProvider of
+       Nothing -> Left "No provider specified. Please specify via --provider or in ~/.llm-hs.json"
+       Just p -> Right $ opts
+         { provider = Just p
+         , modelName = mergedModel
+         , apiKeyOpt = mergedApiKey
+         , baseUrlOpt = mergedBaseUrl
+         , streamOpt = mergedStream
+         , colorOpt = mergedColor
+         }
+
+getApiKeyFromConfig :: Config -> Provider -> Maybe Data.Text.Text
+getApiKeyFromConfig config OpenAI = openaiApiKey config
+getApiKeyFromConfig config Claude = claudeApiKey config
+getApiKeyFromConfig config Gemini = geminiApiKey config
+getApiKeyFromConfig _ Ollama = Nothing

@@ -32,6 +32,8 @@ library
       App.Utils
       CLI
       Config
+      Config.Types
+      Core.Retry
       Core.Types
       Integration.MCP
       Providers.Claude
@@ -66,6 +68,7 @@ library
     , optparse-applicative
     , process
     , req >=3.0
+    , retry
     , stm
     , text
     , time
@@ -100,6 +103,7 @@ executable llm-hs
     , optparse-applicative
     , process
     , req >=3.0
+    , retry
     , stm
     , text
     , time
@@ -135,6 +139,7 @@ test-suite llm-hs-test
     , optparse-applicative
     , process
     , req >=3.0
+    , retry
     , stm
     , text
     , time

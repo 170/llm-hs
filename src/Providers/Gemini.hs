@@ -20,11 +20,13 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import System.IO (hFlush, stdout, stderr)
-import Network.HTTP.Simple
-import Network.HTTP.Conduit (responseBody)
+import Network.HTTP.Simple (setRequestResponseTimeout, getResponseBody, getResponseStatusCode, httpLBS, parseRequest, setRequestBodyJSON, setRequestHeader, withResponse, Request)
+import Network.HTTP.Conduit (responseBody, responseTimeoutMicro)
 import qualified Core.Types as Types
 import Core.Types (LLMRequest, LLMResponse(..), LLMError(..), LLMProvider(..))
 import UI.Spinner (stopSpinner)
+import qualified Core.Retry as Retry
+import Control.Retry (RetryStatus(..))
 
 -- Tool types
 newtype GeminiTool = GeminiTool
@@ -150,7 +152,7 @@ callGemini llmReq = case Types.apiKey llmReq of
   where
     toGeminiContent msg = GeminiContent [GeminiPart (Just $ Types.messageContent msg) Nothing]
 
--- | Build Gemini request
+-- | Build Gemini request with 60 second timeout
 buildGeminiRequest :: Text -> Text -> [GeminiContent] -> Maybe [GeminiTool] -> Bool -> IO Request
 buildGeminiRequest apiKey' model' contents' tools' stream' = do
   let requestBody = GeminiRequest
@@ -161,33 +163,37 @@ buildGeminiRequest apiKey' model' contents' tools' stream' = do
       url = "POST https://generativelanguage.googleapis.com/v1beta/models/"
             <> T.unpack model' <> endpoint
   request' <- parseRequest url
-  return $ setRequestBodyJSON requestBody
+  return $ setRequestResponseTimeout (responseTimeoutMicro 60000000) -- 60 seconds
+         $ setRequestBodyJSON requestBody
          $ setRequestHeader "x-goog-api-key" [TE.encodeUtf8 apiKey'] request'
 
 callGeminiNonStream :: Text -> Text -> [GeminiContent] -> Maybe [GeminiTool] -> IO (Either LLMError LLMResponse)
-callGeminiNonStream apiKey' model' contents' tools' = do
-  result <- try $ do
-    request <- buildGeminiRequest apiKey' model' contents' tools' False
-    response <- httpLBS request
-    let body = getResponseBody response
-        statusCode = getResponseStatusCode response
-    -- Debug: print error responses
-    when (statusCode /= 200) $ do
-      TIO.hPutStrLn stderr $ "Gemini API Error (status " <> T.pack (show statusCode) <> "):"
-      LBS.hPutStr stderr body
-      TIO.hPutStrLn stderr ""
-    case eitherDecode body of
-      Left err -> return $ Left $ ParseError $ T.pack $ err ++ " (status: " ++ show statusCode ++ ")"
-      Right geminiResp ->
-        case candidates geminiResp of
-          [] -> return $ Left $ APIError "No response from Gemini"
-          (candidate:_) -> do
-            let (textContent', toolCalls') = extractContent (parts $ candidateContent candidate)
-            return $ Right $ LLMResponse textContent' toolCalls'
+callGeminiNonStream apiKey' model' contents' tools' =
+  Retry.retryWithBackoff Retry.defaultRetryPolicy $ \rs -> do
+    when (rsIterNumber rs > 0) $
+      TIO.hPutStrLn stderr $ "Retrying request (attempt " <> T.pack (show $ rsIterNumber rs + 1) <> ")..."
+    result <- try $ do
+      request <- buildGeminiRequest apiKey' model' contents' tools' False
+      response <- httpLBS request
+      let body = getResponseBody response
+          statusCode = getResponseStatusCode response
+      -- Debug: print error responses
+      when (statusCode /= 200) $ do
+        TIO.hPutStrLn stderr $ "Gemini API Error (status " <> T.pack (show statusCode) <> "):"
+        LBS.hPutStr stderr body
+        TIO.hPutStrLn stderr ""
+      case eitherDecode body of
+        Left err -> return $ Left $ ParseError $ T.pack $ err ++ " (status: " ++ show statusCode ++ ")"
+        Right geminiResp ->
+          case candidates geminiResp of
+            [] -> return $ Left $ APIError "No response from Gemini"
+            (candidate:_) -> do
+              let (textContent', toolCalls') = extractContent (parts $ candidateContent candidate)
+              return $ Right $ LLMResponse textContent' toolCalls'
 
-  case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
-    Right res -> return res
+    case result of
+      Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
+      Right res -> return res
   where
     extractContent :: [GeminiPart] -> (Text, Maybe [Types.ToolCall])
     extractContent partsList =

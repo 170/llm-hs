@@ -23,11 +23,13 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import System.IO (hFlush, stdout, stderr)
-import Network.HTTP.Simple
-import Network.HTTP.Conduit (responseBody)
+import Network.HTTP.Simple (setRequestResponseTimeout, getResponseBody, getResponseStatusCode, httpLBS, parseRequest, setRequestBodyJSON, setRequestHeader, withResponse, Request)
+import Network.HTTP.Conduit (responseBody, responseTimeoutMicro)
 import qualified Core.Types as Types
 import Core.Types (LLMRequest, LLMResponse(..), LLMError(..), LLMProvider(..))
 import UI.Spinner (stopSpinner)
+import qualified Core.Retry as Retry
+import Control.Retry (RetryStatus(..))
 
 -- Tool types
 data ClaudeTool = ClaudeTool
@@ -194,7 +196,7 @@ callClaude llmReq = case Types.apiKey llmReq of
             xs -> Just $ T.intercalate "\n\n" xs
       in (systemPrompt', nonSystemMsgs)
 
--- | Build Claude request
+-- | Build Claude request with 60 second timeout
 buildClaudeRequest :: Text -> Text -> [ClaudeMessage] -> Maybe Text -> Maybe [ClaudeTool] -> Bool -> IO Request
 buildClaudeRequest apiKey' model' messages' systemPrompt' tools' stream' = do
   let requestBody = ClaudeRequest
@@ -206,17 +208,21 @@ buildClaudeRequest apiKey' model' messages' systemPrompt' tools' stream' = do
         , tools = tools'
         }
   request' <- parseRequest "POST https://api.anthropic.com/v1/messages"
-  return $ setRequestBodyJSON requestBody
+  return $ setRequestResponseTimeout (responseTimeoutMicro 60000000) -- 60 seconds
+         $ setRequestBodyJSON requestBody
          $ setRequestHeader "x-api-key" [TE.encodeUtf8 apiKey']
          $ setRequestHeader "anthropic-version" ["2023-06-01"]
          $ setRequestHeader "content-type" ["application/json"] request'
 
 callClaudeNonStream :: Text -> Text -> [ClaudeMessage] -> Maybe Text -> Maybe [ClaudeTool] -> IO (Either LLMError LLMResponse)
-callClaudeNonStream apiKey' model' messages' systemPrompt' tools' = do
-  result <- try $ executeClaudeRequest apiKey' model' messages' systemPrompt' tools'
-  case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
-    Right res -> return res
+callClaudeNonStream apiKey' model' messages' systemPrompt' tools' =
+  Retry.retryWithBackoff Retry.defaultRetryPolicy $ \rs -> do
+    when (rsIterNumber rs > 0) $
+      TIO.hPutStrLn stderr $ "Retrying request (attempt " <> T.pack (show $ rsIterNumber rs + 1) <> ")..."
+    result <- try $ executeClaudeRequest apiKey' model' messages' systemPrompt' tools'
+    case result of
+      Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
+      Right res -> return res
 
 executeClaudeRequest :: Text -> Text -> [ClaudeMessage] -> Maybe Text -> Maybe [ClaudeTool] -> IO (Either LLMError LLMResponse)
 executeClaudeRequest apiKey' model' messages' systemPrompt' tools' = do

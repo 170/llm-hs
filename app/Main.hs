@@ -1,8 +1,8 @@
 module Main (main) where
 
 import App
-import CLI (parseOptions, mergeConfigWithOptions)
-import Config (loadConfig)
+import CLI (parseOptions)
+import Config (loadConfig, applyConfigToOptions)
 import System.Exit (die)
 
 main :: IO ()
@@ -14,6 +14,6 @@ main = do
   cliOpts <- parseOptions
 
   -- Merge config file with CLI options (CLI takes precedence)
-  case mergeConfigWithOptions config cliOpts of
+  case applyConfigToOptions config cliOpts of
     Left err -> die err
     Right opts -> runLLM opts

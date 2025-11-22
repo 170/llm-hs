@@ -41,6 +41,7 @@ dependencies:
 - containers
 - time
 - wcwidth
+- retry
 
 ghc-options:
 - -Wall

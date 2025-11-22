@@ -22,12 +22,14 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
-import System.IO (hFlush, stdout)
-import Network.HTTP.Simple
-import Network.HTTP.Conduit (responseBody)
+import System.IO (hFlush, stdout, stderr)
+import Network.HTTP.Simple (setRequestResponseTimeout, getResponseBody, httpLBS, parseRequest, setRequestBodyJSON, setRequestHeader, withResponse, Request)
+import Network.HTTP.Conduit (responseBody, responseTimeoutMicro)
 import qualified Core.Types as Types
 import Core.Types (LLMRequest, LLMResponse(..), LLMError(..), LLMProvider(..))
 import UI.Spinner (stopSpinner)
+import qualified Core.Retry as Retry
+import Control.Retry (RetryStatus(..))
 
 data OpenAIToolCall = OpenAIToolCall
   { toolCallIndex :: Maybe Int
@@ -196,7 +198,7 @@ callOpenAI llmReq = case Types.apiKey llmReq of
   where
     toOpenAIMessage msg = OpenAIMessage (Types.role msg) (Just $ Types.messageContent msg) Nothing
 
--- | Build OpenAI request
+-- | Build OpenAI request with 60 second timeout
 buildOpenAIRequest :: Text -> Text -> [OpenAIMessage] -> Maybe [OpenAITool] -> Bool -> IO Request
 buildOpenAIRequest apiKey' model' messages' tools' stream' = do
   let requestBody = OpenAIRequest
@@ -206,29 +208,33 @@ buildOpenAIRequest apiKey' model' messages' tools' stream' = do
         , tools = tools'
         }
   request' <- parseRequest "POST https://api.openai.com/v1/chat/completions"
-  return $ setRequestBodyJSON requestBody
+  return $ setRequestResponseTimeout (responseTimeoutMicro 60000000) -- 60 seconds
+         $ setRequestBodyJSON requestBody
          $ setRequestHeader "Authorization" ["Bearer " <> TE.encodeUtf8 apiKey'] request'
 
 callOpenAINonStream :: Text -> Text -> [OpenAIMessage] -> Maybe [OpenAITool] -> IO (Either LLMError LLMResponse)
-callOpenAINonStream apiKey' model' messages' tools' = do
-  result <- try $ do
-    request <- buildOpenAIRequest apiKey' model' messages' tools' False
-    response <- httpLBS request
-    let body = getResponseBody response
-    case eitherDecode body of
-      Left err -> return $ Left $ ParseError $ T.pack err
-      Right openAIResp ->
-        case choices openAIResp of
-          [] -> return $ Left $ APIError "No response from OpenAI"
-          (choice:_) ->
-            let msg = message choice
-                content' = fromMaybe "" (messageContent msg)
-                toolCalls' = (fmap . fmap) convertToolCall (Providers.OpenAI.toolCalls msg)
-            in return $ Right $ LLMResponse content' toolCalls'
+callOpenAINonStream apiKey' model' messages' tools' =
+  Retry.retryWithBackoff Retry.defaultRetryPolicy $ \rs -> do
+    when (rsIterNumber rs > 0) $
+      TIO.hPutStrLn stderr $ "Retrying request (attempt " <> T.pack (show $ rsIterNumber rs + 1) <> ")..."
+    result <- try $ do
+      request <- buildOpenAIRequest apiKey' model' messages' tools' False
+      response <- httpLBS request
+      let body = getResponseBody response
+      case eitherDecode body of
+        Left err -> return $ Left $ ParseError $ T.pack err
+        Right openAIResp ->
+          case choices openAIResp of
+            [] -> return $ Left $ APIError "No response from OpenAI"
+            (choice:_) ->
+              let msg = message choice
+                  content' = fromMaybe "" (messageContent msg)
+                  toolCalls' = (fmap . fmap) convertToolCall (Providers.OpenAI.toolCalls msg)
+              in return $ Right $ LLMResponse content' toolCalls'
 
-  case result of
-    Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
-    Right res -> return res
+    case result of
+      Left (e :: SomeException) -> return $ Left $ NetworkError $ T.pack $ show e
+      Right res -> return res
   where
     convertToolCall tc = Types.ToolCall
       (toolCallId tc)
